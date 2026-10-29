@@ -1,0 +1,13 @@
+{
+  "domain": "daynight_lighting",
+  "name": "DayNight Lighting",
+  "codeowners": ["@floriansp"],
+  "config_flow": true,
+  "dependencies": ["light"],
+  "documentation": "https://github.com/floriansp/daynight_lighting#readme",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/floriansp/daynight_lighting/issues",
+  "loggers": ["custom_components.daynight_lighting"],
+  "requirements": [],
+  "version": "1.19.42"
+}

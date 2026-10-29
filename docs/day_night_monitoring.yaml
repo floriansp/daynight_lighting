@@ -1,0 +1,80 @@
+# DayNight Lighting — monitoring view
+#
+# Paste into a dashboard via "Edit dashboard" -> three dots -> "Raw
+# configuration editor", below the existing `views:` key.
+#
+# Replace the instance names (kitchen, living_room, bedroom) with yours and
+# drop the rows you do not need. See MONITORING.md for the template sensor
+# used by the target-versus-actual card.
+
+views:
+  - title: Lighting modes
+    path: lighting-modes
+    icon: mdi:theme-light-dark
+    cards:
+      # ------------------------------------------------------------------
+      # Which room was in which mode, and when
+      # ------------------------------------------------------------------
+      - type: history-graph
+        title: Mode timeline
+        hours_to_show: 48
+        entities:
+          - entity: sensor.daynight_lighting_kitchen_mode
+            name: Kitchen
+          - entity: sensor.daynight_lighting_living_room_mode
+            name: Living room
+          - entity: sensor.daynight_lighting_bedroom_mode
+            name: Bedroom
+
+      # Mode changes in plain text, including who triggered them
+      - type: logbook
+        title: Mode changes
+        hours_to_show: 48
+        entities:
+          - sensor.daynight_lighting_kitchen_mode
+          - sensor.daynight_lighting_living_room_mode
+          - sensor.daynight_lighting_bedroom_mode
+
+      # ------------------------------------------------------------------
+      # Target versus actual for one room
+      #
+      # The target is what the integration commanded, the actual value comes
+      # from the lamp. Drift between the two means something else is driving
+      # the light.
+      # ------------------------------------------------------------------
+      - type: history-graph
+        title: Kitchen — brightness target vs actual
+        hours_to_show: 24
+        entities:
+          - entity: sensor.daynight_lighting_kitchen_target_brightness
+            name: Target
+          - entity: sensor.kitchen_light_brightness
+            name: Actual
+
+      - type: history-graph
+        title: Kitchen — colour temperature and ramp progress
+        hours_to_show: 24
+        entities:
+          - entity: sensor.daynight_lighting_kitchen_target_color_temperature
+            name: Target colour temperature
+          - entity: sensor.daynight_lighting_kitchen_mode_progress
+            name: Ramp progress
+
+      # ------------------------------------------------------------------
+      # Current state at a glance
+      # ------------------------------------------------------------------
+      - type: entities
+        title: Now
+        entities:
+          - type: section
+            label: Kitchen
+          - entity: sensor.daynight_lighting_kitchen_mode
+            name: Mode
+          - entity: sensor.daynight_lighting_kitchen_target_brightness
+            name: Target brightness
+          - entity: sensor.daynight_lighting_kitchen_target_color_temperature
+            name: Target colour temperature
+          - entity: sensor.daynight_lighting_kitchen_mode_progress
+            name: Ramp progress
+          - entity: binary_sensor.daynight_lighting_kitchen_on_hold
+            name: On hold

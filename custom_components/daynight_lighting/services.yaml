@@ -1,0 +1,186 @@
+# Service descriptions for the UI (names/descriptions in translations)
+turn_on:
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+  fields:
+    brightness_pct:
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    color_temp_kelvin:
+      selector:
+        number:
+          min: 2000
+          max: 6500
+    color_temp:
+      selector:
+        number:
+          min: 153
+          max: 500
+    rgb_color:
+      selector:
+        color_rgb:
+    transition:
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: s
+    hold:
+      description: >-
+        Hold the lights until the phase ends (a visitor interaction). When
+        false (default), the day/night automation keeps managing the lights.
+      default: false
+      selector:
+        boolean:
+
+turn_off:
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+  fields:
+    transition:
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: s
+    hold:
+      description: >-
+        Hold the lights until the phase ends (a visitor interaction). When
+        false (default), the day/night automation keeps managing the lights.
+      default: false
+      selector:
+        boolean:
+
+calibrate_lux:
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+
+start_sleep_mode:
+  description: "Immediately start Sleep Mode, bypassing schedule"
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+  fields:
+    duration_min:
+      description: "Optional override for sleep duration in minutes"
+      selector:
+        number:
+          min: 1
+          max: 240
+          unit_of_measurement: "min"
+    brightness_pct:
+      description: "Optional override for target brightness (0-100)"
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    color_temp_kelvin:
+      description: "Optional override for target color temperature in Kelvin"
+      selector:
+        number:
+          min: 1000
+          max: 10000
+          unit_of_measurement: "K"
+
+start_wakeup_mode:
+  description: "Immediately start Wake-up Mode, bypassing schedule"
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+  fields:
+    duration_min:
+      description: "Optional override for wake-up duration in minutes"
+      selector:
+        number:
+          min: 1
+          max: 240
+          unit_of_measurement: "min"
+    start_brightness_pct:
+      description: "Optional override for start brightness (0-100)"
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    end_brightness_pct:
+      description: "Optional override for end brightness (0-100). When not set, uses auto-detected day/night values."
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    color_temp_kelvin:
+      description: "Optional override for end color temperature in Kelvin"
+      selector:
+        number:
+          min: 1000
+          max: 10000
+          unit_of_measurement: "K"
+
+stop_sleep_mode:
+  description: "Immediately stop Sleep Mode and return to normal day/night mode"
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+
+stop_wakeup_mode:
+  description: "Immediately stop Wake-up Mode and return to normal day/night mode"
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+
+adjust_brightness:
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+  fields:
+    step:
+      required: true
+      selector:
+        number:
+          min: -100
+          max: 100
+          step: 5
+          unit_of_measurement: "%"
+
+reset_night_brightness:
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+
+reset_day_brightness:
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+
+release_hold:
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting
+
+hold_all:
+  description: >-
+    Hold every light of the instance until the phase ends, so the automation
+    stops touching them. The bulk replacement for the "Manual control" switch.
+  target:
+    entity:
+      domain: switch
+      integration: daynight_lighting

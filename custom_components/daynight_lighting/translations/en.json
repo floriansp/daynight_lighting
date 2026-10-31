@@ -1,0 +1,214 @@
+{
+  "services": {
+    "turn_on": {
+      "name": "Turn on",
+      "description": "Turn on lights of the selected DayNight Lighting instance(s). Without brightness/color we use our values (day/night); with brightness/color we record them as ours.",
+      "fields": {
+        "brightness_pct": { "name": "Brightness %" },
+        "color_temp_kelvin": { "name": "Color temperature (Kelvin)" },
+        "color_temp": { "name": "Color temperature (mired)" },
+        "rgb_color": { "name": "RGB colour" },
+        "transition": { "name": "Transition (s)" }
+      }
+    },
+    "turn_off": {
+      "name": "Turn off",
+      "description": "Turn off lights of the selected DayNight Lighting instance(s).",
+      "fields": {
+        "transition": { "name": "Transition (s)" }
+      }
+    },
+    "calibrate_lux": {
+      "name": "Calibrate LUX sensor",
+      "description": "Measures the LUX contribution of your lights at 100% brightness to compensate for lamp influence on the sensor. Run this after sunset in a dark room with no external light sources. The calibration will: (1) turn lights to 100% and measure LUX after 30s, (2) turn lights off and measure LUX after 30s, (3) store the difference as calibration data."
+    },
+    "start_sleep_mode": {
+      "name": "Start sleep mode",
+      "description": "Immediately start sleep mode with optional overrides for duration, brightness and color.",
+      "fields": {
+        "duration_min": { "name": "Duration (minutes)" },
+        "brightness_pct": { "name": "Target brightness %" },
+        "color_temp_kelvin": { "name": "Target color temperature (Kelvin)" }
+      }
+    },
+    "start_wakeup_mode": {
+      "name": "Start wake-up mode",
+      "description": "Immediately start wake-up mode with optional overrides for duration, brightness and color.",
+      "fields": {
+        "duration_min": { "name": "Duration (minutes)" },
+        "start_brightness_pct": { "name": "Start brightness %" },
+        "end_brightness_pct": { "name": "End brightness %" },
+        "color_temp_kelvin": { "name": "End color temperature (Kelvin)" }
+      }
+    },
+    "stop_sleep_mode": {
+      "name": "Stop sleep mode",
+      "description": "Immediately stop sleep mode and return to normal day/night mode."
+    },
+    "stop_wakeup_mode": {
+      "name": "Stop wake-up mode",
+      "description": "Immediately stop wake-up mode and return to normal day/night mode."
+    },
+    "release_hold": {
+      "name": "Release hold",
+      "description": "Drop the hold that a turn_on/turn_off placed on the lights and restore the configured state, so the day/night automation takes over again."
+    },
+    "hold_all": {
+      "name": "Hold all",
+      "description": "Hold every light of the instance until the phase ends, so the automation stops touching them. The bulk replacement for the Manual control switch."
+    }
+  },
+  "selector": {
+    "day_mode_fallback": {
+      "options": {
+        "skip": "Skip (do nothing)",
+        "fixed": "Fixed brightness",
+        "circadian_only": "Circadian color only",
+        "off": "Turn lights off"
+      }
+    },
+    "night_mode_start": {
+      "options": {
+        "sun_below_horizon": "At sunset (sun below horizon)",
+        "at_time": "At configured time only"
+      }
+    },
+    "on_enter_night": {
+      "options": {
+        "leave": "Leave lights as they are",
+        "turn_off": "Turn lights off"
+      }
+    },
+    "night_mode_fallback": {
+      "options": {
+        "skip": "Skip (do nothing)",
+        "on": "Turn lights on",
+        "keep": "Keep current state",
+        "off": "Turn lights off"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up DayNight Lighting",
+        "description": "Optionally select an area; the instance name is used for entity IDs (e.g. switch.daynight_lighting_bedroom). You can add lights, sensors and options later.",
+        "data": {
+          "area_id": "Area (optional)",
+          "instance_name": "Instance name (e.g. bedroom, Schlafzimmer)"
+        }
+      }
+    },
+    "error": {
+      "name_or_area_required": "Enter an instance name or select an area."
+    },
+    "abort": {
+      "already_configured": "An instance with this name already exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DayNight Lighting options",
+        "description": "Configure lights, sensors, and day/night behaviour.",
+        "sections": {
+          "area_discovery": {
+            "name": "Area Discovery",
+            "description": "Auto-discover and control lights and sensors in the area selected during setup.",
+            "data": {
+              "use_area_discovery": "Use area discovery",
+              "included_lights": "Lights to control (leave empty for all area lights)",
+              "excluded_motion_sensors": "Motion sensors to ignore (optional)"
+            }
+          },
+          "devices_sensors": {
+            "name": "Manual Devices & Sensors",
+            "description": "Additional lights and sensors beyond those discovered from the area. Leave empty to use only auto-discovered entities.",
+            "data": {
+              "lights": "Additional lights (optional)",
+              "light_sensor": "Additional light sensor (optional)",
+              "motion_sensor": "Additional motion sensor (optional)"
+            }
+          },
+          "day_mode": {
+            "name": "Day Mode",
+            "description": "LUX-based brightness during the day. Brightness is interpolated between min and max based on sensor readings.",
+            "data": {
+              "lux_on": "LUX below this: use max brightness",
+              "lux_off": "LUX above this: use min brightness or off",
+              "day_min_brightness": "Day: minimum brightness % (0 = off when bright)",
+              "day_max_brightness": "Day: maximum brightness %",
+              "lux_smoothing_samples": "LUX smoothing: rolling average samples (1 = off)",
+              "brightness_change_threshold_pct": "Brightness change threshold (%) to prevent micro-adjustments",
+              "flapping_freeze_min": "Flapping freeze duration (minutes) after oscillation detection",
+              "day_mode_fallback": "Day mode without LUX sensor",
+              "day_fixed_brightness_pct": "Fixed brightness (%) for day mode"
+            }
+          },
+          "night_mode": {
+            "name": "Night Mode",
+            "description": "Motion-based lighting at night. Lights turn on with motion and off after the configured delay.",
+            "data": {
+              "night_mode_start_time": "Night mode start time",
+              "night_mode_start": "Night mode starts",
+              "motion_off_delay_min": "Night: minutes until lights off after last motion",
+              "night_brightness": "Night: brightness % when motion turns lights on (starting point, the Night brightness dial can override it)",
+              "on_enter_night": "When entering night mode",
+              "night_mode_fallback": "Night mode without motion sensor"
+            }
+          },
+          "circadian": {
+            "name": "Circadian Colour Temperature",
+            "description": "Automatically adjusts colour temperature based on sun elevation.",
+            "data": {
+              "circadian_enabled": "Circadian colour temperature",
+              "circadian_min_kelvin": "Circadian: min Kelvin (warm)",
+              "circadian_max_kelvin": "Circadian: max Kelvin (cool)"
+            }
+          },
+          "transitions": {
+            "name": "Smooth Transitions",
+            "description": "Native light fading for gradual brightness and colour changes.",
+            "data": {
+              "transition_seconds": "Regular updates (seconds, 0 = instant, max 57)",
+              "initial_transition_seconds": "First turn-on (seconds, 0 = instant)",
+              "mode_transition_seconds": "Day ↔ Night change (seconds, 0 = instant)"
+            }
+          },
+          "sleep_mode": {
+            "name": "Sleep / Wind-down Mode",
+            "description": "Gradual dimming and warming before night mode for better sleep preparation.",
+            "data": {
+              "sleep_enabled": "Enable sleep mode",
+              "sleep_start_time": "Sleep mode start time",
+              "sleep_duration_min": "Sleep duration (minutes, leave empty to use night start time)",
+              "sleep_use_auto_values": "Use automatic start values (from day/night mode)",
+              "sleep_target_brightness": "Sleep: target brightness % (at night start)",
+              "sleep_target_kelvin": "Sleep: target colour temperature (Kelvin, warm)"
+            }
+          },
+          "wakeup_mode": {
+            "name": "Wake-up Light",
+            "description": "Gentle brightness ramp in the morning to simulate natural sunrise.",
+            "data": {
+              "wakeup_enabled": "Enable wake-up light",
+              "wakeup_time": "Wake-up completion time (when day mode starts)",
+              "wakeup_duration_min": "Wake-up duration (minutes)",
+              "wakeup_use_auto_values": "Use automatic end values (from day/night mode)",
+              "wakeup_start_brightness": "Wake-up: start brightness % (minimum)",
+              "wakeup_end_kelvin": "Wake-up: end colour temperature (Kelvin)"
+            }
+          },
+          "weather_brightness": {
+            "name": "Weather-based Brightness",
+            "description": "Adjust day mode brightness based on current weather conditions.",
+            "data": {
+              "weather_brightness_enabled": "Enable weather brightness adjustment",
+              "weather_entity": "Weather entity"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,214 @@
+{
+  "services": {
+    "turn_on": {
+      "name": "Ein",
+      "description": "Lights der gewählten DayNight-Lighting-Instanz(en) einschalten. Ohne Helligkeit/Farbe setzen wir unsere Werte (Tag/Nacht); mit Helligkeit/Farbe übernehmen wir sie als unsere.",
+      "fields": {
+        "brightness_pct": { "name": "Helligkeit %" },
+        "color_temp_kelvin": { "name": "Farbtemperatur (Kelvin)" },
+        "color_temp": { "name": "Farbtemperatur (Mired)" },
+        "rgb_color": { "name": "RGB-Farbe" },
+        "transition": { "name": "Übergang (s)" }
+      }
+    },
+    "turn_off": {
+      "name": "Aus",
+      "description": "Lights der gewählten DayNight-Lighting-Instanz(en) ausschalten.",
+      "fields": {
+        "transition": { "name": "Übergang (s)" }
+      }
+    },
+    "calibrate_lux": {
+      "name": "LUX-Sensor kalibrieren",
+      "description": "Misst den LUX-Beitrag deiner Lampen bei 100% Helligkeit, um den Lampeneinfluss auf den Sensor zu kompensieren. Führe dies nach Sonnenuntergang in einem dunklen Raum ohne externe Lichtquellen aus. Die Kalibrierung wird: (1) Lampen auf 100% schalten und LUX nach 30s messen, (2) Lampen ausschalten und LUX nach 30s messen, (3) die Differenz als Kalibrierungsdaten speichern."
+    },
+    "start_sleep_mode": {
+      "name": "Schlaf-Modus starten",
+      "description": "Schlaf-Modus sofort mit optionalen Überschreibungen für Dauer, Helligkeit und Farbe starten.",
+      "fields": {
+        "duration_min": { "name": "Dauer (Minuten)" },
+        "brightness_pct": { "name": "Ziel-Helligkeit %" },
+        "color_temp_kelvin": { "name": "Ziel-Farbtemperatur (Kelvin)" }
+      }
+    },
+    "start_wakeup_mode": {
+      "name": "Aufwach-Modus starten",
+      "description": "Aufwach-Modus sofort mit optionalen Überschreibungen für Dauer, Helligkeit und Farbe starten.",
+      "fields": {
+        "duration_min": { "name": "Dauer (Minuten)" },
+        "start_brightness_pct": { "name": "Start-Helligkeit %" },
+        "end_brightness_pct": { "name": "End-Helligkeit %" },
+        "color_temp_kelvin": { "name": "End-Farbtemperatur (Kelvin)" }
+      }
+    },
+    "stop_sleep_mode": {
+      "name": "Schlaf-Modus stoppen",
+      "description": "Schlaf-Modus sofort stoppen und zum normalen Tag-/Nacht-Modus zurückkehren."
+    },
+    "stop_wakeup_mode": {
+      "name": "Aufwach-Modus stoppen",
+      "description": "Aufwach-Modus sofort stoppen und zum normalen Tag-/Nacht-Modus zurückkehren."
+    },
+    "release_hold": {
+      "name": "Halten aufheben",
+      "description": "Hebt das Halten auf, das ein Einschalten/Ausschalten auf die Lichter gelegt hat, und stellt den konfigurierten Zustand wieder her, sodass die Tag-/Nacht-Automatik wieder übernimmt."
+    },
+    "hold_all": {
+      "name": "Alle halten",
+      "description": "Hält alle Lichter der Instanz bis zum Phasenende, sodass die Automatik sie nicht mehr anfasst. Der Ersatz für den Schalter „Manuelle Steuerung“."
+    }
+  },
+  "selector": {
+    "day_mode_fallback": {
+      "options": {
+        "skip": "Überspringen (nichts tun)",
+        "fixed": "Feste Helligkeit",
+        "circadian_only": "Nur zirkadiane Farbe",
+        "off": "Lichter ausschalten"
+      }
+    },
+    "night_mode_start": {
+      "options": {
+        "sun_below_horizon": "Bei Sonnenuntergang (Sonne unter Horizont)",
+        "at_time": "Nur zur konfigurierten Zeit"
+      }
+    },
+    "on_enter_night": {
+      "options": {
+        "leave": "Lichter so lassen",
+        "turn_off": "Lichter ausschalten"
+      }
+    },
+    "night_mode_fallback": {
+      "options": {
+        "skip": "Überspringen (nichts tun)",
+        "on": "Lichter einschalten",
+        "keep": "Aktuellen Zustand behalten",
+        "off": "Lichter ausschalten"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "DayNight Lighting einrichten",
+        "description": "Optional einen Bereich wählen; der Instanzname wird für die Entity-IDs verwendet (z. B. switch.daynight_lighting_schlafzimmer). Lichter, Sensoren und Optionen kannst du später hinzufügen.",
+        "data": {
+          "area_id": "Bereich (optional)",
+          "instance_name": "Instanzname (z. B. Schlafzimmer, Küche)"
+        }
+      }
+    },
+    "error": {
+      "name_or_area_required": "Gib einen Instanznamen ein oder wähle einen Bereich."
+    },
+    "abort": {
+      "already_configured": "Eine Instanz mit diesem Namen existiert bereits."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DayNight Lighting Optionen",
+        "description": "Lights, Sensoren und Tag-/Nacht-Verhalten konfigurieren.",
+        "sections": {
+          "area_discovery": {
+            "name": "Bereichserkennung",
+            "description": "Lampen und Sensoren im bei der Einrichtung gewählten Bereich automatisch erkennen und steuern.",
+            "data": {
+              "use_area_discovery": "Bereichserkennung verwenden",
+              "included_lights": "Zu steuernde Lampen (leer lassen für alle Bereichs-Lampen)",
+              "excluded_motion_sensors": "Zu ignorierende Bewegungssensoren (optional)"
+            }
+          },
+          "devices_sensors": {
+            "name": "Manuelle Geräte & Sensoren",
+            "description": "Zusätzliche Lampen und Sensoren neben denen aus dem Bereich. Leer lassen, um nur automatisch erkannte Entitäten zu verwenden.",
+            "data": {
+              "lights": "Zusätzliche Lampen (optional)",
+              "light_sensor": "Zusätzlicher Lichtsensor (optional)",
+              "motion_sensor": "Zusätzlicher Bewegungssensor (optional)"
+            }
+          },
+          "day_mode": {
+            "name": "Tag-Modus",
+            "description": "LUX-basierte Helligkeit am Tag. Die Helligkeit wird zwischen Min und Max anhand der Sensorwerte interpoliert.",
+            "data": {
+              "lux_on": "LUX darunter: maximale Helligkeit",
+              "lux_off": "LUX darüber: minimale Helligkeit oder aus",
+              "day_min_brightness": "Tag: Mindest-Helligkeit % (0 = aus bei Helligkeit)",
+              "day_max_brightness": "Tag: Maximale Helligkeit %",
+              "lux_smoothing_samples": "LUX-Glättung: Anzahl Samples für rollierenden Durchschnitt (1 = aus)",
+              "brightness_change_threshold_pct": "Helligkeitsänderungs-Schwellwert (%) zur Vermeidung von Mikro-Anpassungen",
+              "flapping_freeze_min": "Flapping-Freeze-Dauer (Minuten) nach Oszillationserkennung",
+              "day_mode_fallback": "Tag-Modus ohne LUX-Sensor",
+              "day_fixed_brightness_pct": "Feste Helligkeit (%) für Tag-Modus"
+            }
+          },
+          "night_mode": {
+            "name": "Nacht-Modus",
+            "description": "Bewegungsbasierte Beleuchtung in der Nacht. Lichter gehen bei Bewegung an und nach der konfigurierten Verzögerung aus.",
+            "data": {
+              "night_mode_start_time": "Nacht-Modus Startzeit",
+              "night_mode_start": "Nacht-Modus beginnt",
+              "motion_off_delay_min": "Nacht: Minuten bis Lights aus nach letzter Bewegung",
+              "night_brightness": "Nacht: Helligkeit % wenn Bewegung Lights einschaltet (Startwert, der Regler \u201eNachthelligkeit\u201c kann ihn \u00fcberschreiben)",
+              "on_enter_night": "Beim Wechsel in den Nacht-Modus",
+              "night_mode_fallback": "Nacht-Modus ohne Bewegungssensor"
+            }
+          },
+          "circadian": {
+            "name": "Zirkadiane Farbtemperatur",
+            "description": "Passt die Farbtemperatur automatisch anhand der Sonnenhöhe an.",
+            "data": {
+              "circadian_enabled": "Zirkadiane Farbtemperatur",
+              "circadian_min_kelvin": "Zirkadian: Min. Kelvin (warm)",
+              "circadian_max_kelvin": "Zirkadian: Max. Kelvin (kühl)"
+            }
+          },
+          "transitions": {
+            "name": "Sanfte Übergänge",
+            "description": "Natives Light-Fading für weiche Helligkeits- und Farbänderungen.",
+            "data": {
+              "transition_seconds": "Reguläre Updates (Sekunden, 0 = sofort, max 57)",
+              "initial_transition_seconds": "Erstes Einschalten (Sekunden, 0 = sofort)",
+              "mode_transition_seconds": "Tag ↔ Nacht Wechsel (Sekunden, 0 = sofort)"
+            }
+          },
+          "sleep_mode": {
+            "name": "Schlaf- / Eindunkelungs-Modus",
+            "description": "Allmähliches Abdimmen und Erwärmen vor dem Nachtmodus zur besseren Schlafvorbereitung.",
+            "data": {
+              "sleep_enabled": "Schlaf-Modus aktivieren",
+              "sleep_start_time": "Schlaf-Modus Startzeit",
+              "sleep_duration_min": "Schlaf-Dauer (Minuten, leer lassen für Nachtstart-Zeit)",
+              "sleep_use_auto_values": "Automatische Startwerte verwenden (aus Tag/Nacht-Modus)",
+              "sleep_target_brightness": "Schlaf: Ziel-Helligkeit % (bei Nachtstart)",
+              "sleep_target_kelvin": "Schlaf: Ziel-Farbtemperatur (Kelvin, warm)"
+            }
+          },
+          "wakeup_mode": {
+            "name": "Aufwach-Licht",
+            "description": "Sanfter Helligkeitsanstieg am Morgen zur Simulation des natürlichen Sonnenaufgangs.",
+            "data": {
+              "wakeup_enabled": "Aufwach-Licht aktivieren",
+              "wakeup_time": "Aufwach-Endzeit (wenn Tag-Modus beginnt)",
+              "wakeup_duration_min": "Aufwach-Dauer (Minuten)",
+              "wakeup_use_auto_values": "Automatische Endwerte verwenden (aus Tag/Nacht-Modus)",
+              "wakeup_start_brightness": "Aufwachen: Start-Helligkeit % (Minimum)",
+              "wakeup_end_kelvin": "Aufwachen: End-Farbtemperatur (Kelvin)"
+            }
+          },
+          "weather_brightness": {
+            "name": "Wetterbasierte Helligkeit",
+            "description": "Tag-Modus Helligkeit basierend auf aktuellen Wetterbedingungen anpassen.",
+            "data": {
+              "weather_brightness_enabled": "Wetterbasierte Helligkeitsanpassung aktivieren",
+              "weather_entity": "Wetter-Entität"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -49,7 +49,7 @@ flowchart TD
     p2b -- no --> s2b([Stop here])
     p2 -- no --> p3{"3 · Wake-up started<br/>by service?"}
     p3 -- yes --> s3([Wake-up tick, nothing else])
-    p3 -- no --> p4["4 · Determine the mode, and on a change<br/>run the transition: exit, enter,<br/>reset the brightness dials, clear the holds"]
+    p3 -- no --> p4["4 · Determine the mode, and on a change<br/>run the transition: exit, enter,<br/>reset the brightness dials, clear the service holds"]
     p4 --> p5{"Night with a motion sensor?"}
     p5 -- yes --> s5([Act only while motion is present])
     p5 -- no --> s6([Apply the mode's values])
@@ -80,8 +80,9 @@ reasons, both visible on the `on_hold` binary sensor:
 
 A hold never cancels a mode or a ramp. A sleep or wake-up ramp keeps running
 for the non-held lights; it simply skips the held ones. Entering a new mode
-clears every hold, so a visitor's choice lives only within the phase it was
-made in.
+clears every service hold, so a visitor's choice lives only within the phase it
+was made in; a detected hold survives the mode change and ends only when the
+light stops showing the intervention.
 
 The **safety room** (the *Block wall buttons* switch, only meaningful in a
 motion-lit room at night) is the one exception: while it is on, the
@@ -155,26 +156,67 @@ flowchart TD
     service --> life
     life --> end{How does it end?}
     end -- "release_hold (service, button)" --> release
-    end -- "the next mode transition" --> release
-    release["Release: clear the holds,<br/>reset the dials, forget the applied values,<br/>apply the mode now"]
+    end -- "the next mode transition<br/>(service only)" --> release
+    end -- "a restart, when the light<br/>no longer differs" --> release
+    release["Release: clear the holds,<br/>reset the dials, forget the applied values,<br/>restore what the next tick would do<br/>(one branch, always logged)"]
 ```
 
 Three things about this are deliberate.
 
-A **detected** hold has no timeout and no stability take-over. It ends only
-when you release it or the mode changes, because a scene somebody froze is
-theirs until the phase moves on. The hold is persisted with the switch, so a
-restart or an options change does not end it.
+A **detected** hold has no timeout and no stability take-over. It ends when you
+release it, and it outlives a mode change, because a scene somebody froze is
+theirs until the light stops showing it. For the same reason a restart does not
+simply keep it: on every start the restored hold is checked against the light's
+current state and dropped unless the light still differs from the state we
+expected (or is off while it should be on). A hold whose intervention is gone
+must not keep us off that light forever. A lamp that has not reported yet is
+judged the moment it does, against the expected state as it was at startup —
+the startup tick would have overwritten that record by then.
 
 A **service** hold is the deliberate, bounded version of "hands off": it ends
 when your automation says so (`release_hold`) or on the next mode transition.
 That is the replacement for the old "manual control" switch — `hold_all`
-holds every light of the instance at once.
+holds every light of the instance at once. Because it records an explicit
+intent, a restart always keeps it.
 
 "Apply the mode now" means exactly what the next tick would apply. Inside a
 sleep or wake-up ramp that is the ramp, and in the dark block after a sleep
 it is nothing at all. A release never flashes day or night values into a
 ramp for a minute.
+
+Which branch a release takes is decided by the moment, never by whether
+anything *should* happen — night without motion is the normal case after the
+television goes off, not a reason to skip the step:
+
+| Situation at the release | Branch | What the release commands |
+| --- | --- | --- |
+| A service-started sleep or wake-up is running | `service-ramp` | Nothing beyond the ramp's own values |
+| Night with a motion sensor, motion right now | `night-motion` | The night target, lights handed back to us first |
+| Night with a motion sensor, no motion | `night-off` | OFF for the lights the off timer selects |
+| … and the off timer selects nothing | `night-adopt` | Nothing; the current state is adopted |
+| Day, or night without a motion sensor | `mode-apply` | Whatever the next tick would apply |
+
+In `night-motion` the released lights are marked as ours *before* the apply:
+a held light we never claimed makes the motion apply abort the whole room as
+"somebody else owns this" and command nothing at all.
+
+Whatever the branch, a released light the release did not command keeps no
+expectation older than the release: its current state is recorded as the
+expected state, without claiming ownership. Otherwise the old expectation
+still describes the scene's values and the next report reads as a fresh
+intervention — the hold is back minutes later, and the room is locked out
+again. That is one rule for every branch, present and future, rather than a
+timer or a widened tolerance that would only hide the cause.
+
+The release logs its decision, so the next occurrence is diagnosable:
+
+```text
+[Living-room] hold released: 2 light(s), branch=night-off, commanded=2, adopted=0
+```
+
+A light that ignores our command keeps a genuine divergence and is held again
+on its next report — that is the documented behaviour, not a regression: the
+room is bright although night mode wants it dark.
 
 Forgetting the applied values is part of every release. Day mode only sends a
 brightness when it differs from the last one *it* sent, and after somebody

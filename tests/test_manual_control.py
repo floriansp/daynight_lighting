@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 from custom_components.daynight_lighting.manual_control import (
     ManualControlDetector,
-    _mired_to_kelvin,
+    mired_to_kelvin,
     compare_light_to_target,
 )
 
@@ -52,22 +52,22 @@ def _make_fake_state_controller():
 
 
 class TestMiredToKelvin:
-    """Tests for _mired_to_kelvin helper."""
+    """Tests for mired_to_kelvin helper."""
 
     def test_none_returns_none(self):
-        assert _mired_to_kelvin(None) is None
+        assert mired_to_kelvin(None) is None
 
     def test_zero_returns_none(self):
-        assert _mired_to_kelvin(0) is None
+        assert mired_to_kelvin(0) is None
 
     def test_350_mired(self):
         # 1,000,000 / 350 ≈ 2857K
-        result = _mired_to_kelvin(350)
+        result = mired_to_kelvin(350)
         assert result == 2857
 
     def test_250_mired(self):
         # 1,000,000 / 250 = 4000K
-        result = _mired_to_kelvin(250)
+        result = mired_to_kelvin(250)
         assert result == 4000
 
 

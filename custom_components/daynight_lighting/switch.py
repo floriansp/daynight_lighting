@@ -14,7 +14,7 @@ from typing import Any
 from homeassistant.components.light import ATTR_BRIGHTNESS_PCT
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_ON
+from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo
@@ -56,6 +56,7 @@ from .control_switches import (
     DayNightLightingControlBrightnessSwitch,
     DayNightLightingControlColorSwitch,
 )
+from .domain.brightness import brightness_to_pct
 from .handlers import (
     DayModeHandler,
     NightModeHandler,
@@ -75,12 +76,18 @@ from .instance_data import (
 )
 from .light_applier import LightApplier
 from .lights import LightsController
-from .manual_control import ExpectedState, ManualControlDetector
+from .manual_control import (
+    DetectionPolicy,
+    ExpectedState,
+    ManualControlDetector,
+    compare_light_to_target,
+    mired_to_kelvin,
+)
 from .motion import MotionController
 from .parsing import calculate_compensated_lux
 from .protocols import ModeProvider
 from .schedule import DayNightSchedule
-from .state_controller import StateController
+from .state_controller import HOLD_REASON_DETECTED, StateController
 from .transition_coordinator import TransitionCoordinator
 from .weather import WeatherReader
 
@@ -211,6 +218,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         self._transition_coordinator_instance: TransitionCoordinator | None = None
         # (monotonic timestamp, discovery dict) — see _get_area_discovery()
         self._discovery_cache: tuple[float, dict[str, Any]] | None = None
+        # Restored detected holds whose light had not reported yet, mapped to
+        # the expected state as it was at load. See _revalidate_restored_holds.
+        self._pending_hold_checks: dict[str, dict[str, Any] | None] = {}
         # Last adopted entity set, used to detect registry changes — see
         # _registry_snapshot() / _on_registry_changed().
         self._last_registry_snapshot: tuple | None = None
@@ -788,8 +798,195 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         return min(value, MAX_TICK_TRANSITION_SECONDS)
 
     # ---------------------------------------------------------------
-    #  Hold release / reapply
+    #  Hold validation / release
     # ---------------------------------------------------------------
+
+    def _in_ramp(self) -> bool:
+        """True while a sleep or wake-up ramp is moving the values itself."""
+        sleep_handler = self._get_mode_handler(MODE_SLEEP)
+        wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
+        return bool(
+            (sleep_handler is not None and sleep_handler.is_sleep_active())
+            or (wakeup_handler is not None and wakeup_handler.is_active())
+        )
+
+    def _detection_policy(self) -> DetectionPolicy:
+        """The tolerances and axes a light is judged with right now.
+
+        Single source of truth for the ruler: the event-driven detection and
+        the re-validation of a restored hold both use it. Inside a sleep or
+        wake-up ramp only on/off is judged, because the ramp legitimately
+        moves brightness and colour.
+        """
+        brightness_tol, kelvin_tol = ManualControlDetector.get_tolerances_for_mode(
+            self._schedule.get_current_mode(),
+            self._illuminance.get_light_sensor_entity() is not None,
+        )
+        in_ramp = self._in_ramp()
+        return DetectionPolicy(
+            brightness_tolerance_pct=brightness_tol,
+            kelvin_tolerance=kelvin_tol,
+            check_brightness=not in_ramp and self._is_control_brightness_on(),
+            check_color=not in_ramp and self._is_control_color_on(),
+        )
+
+    def _hold_release_reason(
+        self,
+        state: Any,
+        expected: dict[str, Any] | None,
+        policy: DetectionPolicy,
+    ) -> str | None:
+        """Why a detected hold no longer protects *state*, or None to keep it.
+
+        The single decision, shared by the startup re-validation and by the
+        deferred check once a silent lamp reports. The caller passes a real
+        (on or off) state; an unusable state is the caller's business, because
+        "no evidence yet" means something different on each path.
+
+        The hold stays as long as the light still differs from what we
+        expected: an off light we wanted on is the user keeping the room dark,
+        and any brightness/colour outside tolerance is an intervention. Only a
+        light that is where we left it has nothing left to protect.
+        """
+        if expected is None:
+            return "no expected state"
+
+        actual_on = state.state == STATE_ON
+        if expected.get("on", False) != actual_on:
+            return None
+        if not actual_on:
+            return "matched expected state"
+
+        comparison = compare_light_to_target(
+            getattr(state, "attributes", {}) or {},
+            expected.get("brightness_pct"),
+            expected.get("kelvin"),
+            brightness_tolerance_pct=policy.brightness_tolerance_pct,
+            kelvin_tolerance=policy.kelvin_tolerance,
+            check_brightness=policy.check_brightness,
+            check_color=policy.check_color,
+        )
+        if comparison.brightness_differs or comparison.color_differs:
+            return None
+        return "matched expected state"
+
+    def _revalidate_restored_holds(self) -> None:
+        """Judge the detected holds that were restored from storage.
+
+        A ``detected`` hold survives a restart and a phase change and ends
+        only through an explicit release, so after a restart it may keep us
+        off a light whose intervention is long gone. Called from both load
+        paths right after ``prune`` and before ``mark_applied``: only holds
+        whose light already matches are released, so the grace period that
+        follows cannot turn a release into a false detection.
+
+        A lamp that has not reported yet cannot be judged, so its hold is kept
+        and handed to ``_revalidate_pending_holds``. A lamp that reports
+        *unavailable* is different: the device is there and says it cannot
+        tell us anything, which is no evidence that the hold is still needed.
+        """
+        detected = [
+            lid
+            for lid, reason in self._state_ctrl.get_held_lights_with_reasons().items()
+            if reason == HOLD_REASON_DETECTED
+        ]
+        self._pending_hold_checks.clear()
+        if not detected:
+            return
+
+        policy = self._detection_policy()
+        stale: list[str] = []
+        for lid in detected:
+            state = self.hass.states.get(lid)
+            if state is None:
+                # Judge it when the lamp reports; see _revalidate_pending_holds.
+                # Copied, not referenced: the snapshot must not follow a later
+                # change to the live record (see _snapshot_expected).
+                self._pending_hold_checks[lid] = self._snapshot_expected(lid)
+                continue
+            if state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                reason = "unavailable"
+            else:
+                reason = self._hold_release_reason(
+                    state, self._state_ctrl.get_expected_state(lid), policy
+                )
+                if reason is None:
+                    continue
+            self._log_released_hold(lid, reason)
+            stale.append(lid)
+
+        if stale:
+            self._state_ctrl.release_hold(stale)
+
+    def _revalidate_pending_holds(self, lights: list[str] | None = None) -> None:
+        """Judge a deferred hold the moment its lamp reports.
+
+        At startup the switch is added before the lights report, so the hold
+        of a lamp that was still silent had to be deferred. It is judged
+        against the expected state *snapshotted at load*, not the live record:
+        the first tick rewrites that one before the lamps are back.
+
+        Called with the reporting *lights* from the state-change listener, and
+        without arguments from the first tick to also cover a report that
+        arrived between the load-time check and the subscription. An
+        ``unavailable``/``unknown`` report is no evidence either way, so the
+        hold keeps waiting — the light is uncontrollable meanwhile.
+        """
+        self._forget_released_holds()
+        if lights is None:
+            lights = list(self._pending_hold_checks)
+        else:
+            lights = [lid for lid in lights if lid in self._pending_hold_checks]
+        if not lights:
+            return
+
+        policy = self._detection_policy()
+        stale: list[str] = []
+        for lid in lights:
+            state = self.hass.states.get(lid)
+            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                continue
+            # Popped before the decision: a real report validates the hold once,
+            # whether it survives or not.
+            reason = self._hold_release_reason(
+                state, self._pending_hold_checks.pop(lid), policy
+            )
+            if reason is None:
+                continue
+            self._log_released_hold(lid, reason)
+            stale.append(lid)
+
+        if stale:
+            self._state_ctrl.release_hold(stale)
+
+    def _forget_released_holds(self) -> None:
+        """Drop pending entries whose hold ended while the lamp was silent."""
+        held = self._state_ctrl.get_held_lights_with_reasons()
+        self._pending_hold_checks = {
+            lid: expected
+            for lid, expected in self._pending_hold_checks.items()
+            if held.get(lid) == HOLD_REASON_DETECTED
+        }
+
+    def _snapshot_expected(self, light_id: str) -> dict[str, Any] | None:
+        """The expected state as it is right now, detached from the live record.
+
+        ``StateController.get_expected_state`` hands out its stored dict, so
+        keeping it would make the deferred check follow whatever the next tick
+        writes. Copying keeps the value the light is judged against the one
+        that was in effect when the hold was restored.
+        """
+        expected = self._state_ctrl.get_expected_state(light_id)
+        return dict(expected) if expected is not None else None
+
+    def _log_released_hold(self, light_id: str, reason: str) -> None:
+        """Log one released hold, one line per light."""
+        _LOGGER.info(
+            "[%s] Restored hold released for %s: %s",
+            self._instance_name,
+            light_id,
+            reason,
+        )
 
     def _forget_applied_values(self) -> None:
         """Let every mode handler drop its memory of its own commands."""
@@ -804,6 +1001,23 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
     def _handle_tick(self) -> None:
         """Central tick: detect mode, transitions, dispatch to mode handler."""
+        try:
+            self._tick_once()
+        finally:
+            # The guard exists so the state reports caused by the handlers'
+            # first apply are not read as external control. Every path here
+            # has had that chance, including the motion-lit night, which
+            # returns early by design — leaving the guard set would silently
+            # disable detection for the whole night.
+            self._first_tick_after_startup = False
+
+    def _tick_once(self) -> None:
+        """One tick, without the startup guard."""
+        if self._first_tick_after_startup and self._pending_hold_checks:
+            # The lamps report asynchronously. A report that arrived between
+            # the load-time check and the subscription would otherwise leave
+            # its hold unvalidated forever; judge it now, against the snapshot.
+            self._revalidate_pending_holds()
         if self._run_service_mode():
             return
 
@@ -849,10 +1063,6 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
         # Dispatch to mode-specific handler
         self._apply_mode_now(mode)
-
-        # Reset first tick flag after initial tick completes
-        if self._first_tick_after_startup:
-            self._first_tick_after_startup = False
 
     def _run_service_mode(self) -> bool:
         """Serve the service-started states that outrank the schedule.
@@ -969,6 +1179,10 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         """Night mode: motion/presence detected → turn on lights."""
         night_handler = self._get_mode_handler(MODE_NIGHT)
         if night_handler is not None:
+            if self._last_mode == MODE_DAY:
+                # The clock already says night, but the tick has not run the
+                # day→night transition yet.
+                night_handler.expect_previous_mode_values()
             night_handler.handle_motion_on()
 
     def _handle_motion_off(self) -> None:
@@ -1050,6 +1264,12 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             if entity_id not in self._lights.get_lights_list():
                 return
 
+            # A restored hold whose light had not reported yet is judged the
+            # moment the lamp does — before the startup/grace guards below,
+            # which have nothing to do with that decision.
+            if entity_id in self._pending_hold_checks:
+                self._revalidate_pending_holds([entity_id])
+
             # Skip if first tick after startup (mode handlers haven't applied yet)
             if self._first_tick_after_startup:
                 return
@@ -1063,38 +1283,21 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             if expected is None:
                 return
 
-            # During a ramp only on/off is judged: brightness/colour are moving
-            # legitimately, but the ramp never switches the light off, so an
-            # OFF is always a real "I want the room dark".
-            sleep_handler = self._get_mode_handler(MODE_SLEEP)
-            wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
-            in_sleep_ramp = bool(sleep_handler and sleep_handler.is_sleep_active())
-            in_wakeup_ramp = bool(wakeup_handler and wakeup_handler.is_active())
-
             try:
-                if in_sleep_ramp or in_wakeup_ramp:
-                    check_brightness = False
-                    check_color = False
-                    brightness_tol = None
-                    kelvin_tol = None
-                else:
-                    mode = self._schedule.get_current_mode()
-                    has_lux = self._illuminance.get_light_sensor_entity() is not None
-                    brightness_tol, kelvin_tol = (
-                        ManualControlDetector.get_tolerances_for_mode(mode, has_lux)
-                    )
-                    check_brightness = self._is_control_brightness_on()
-                    check_color = self._is_control_color_on()
+                # The same ruler the hold re-validation uses: inside a ramp
+                # only on/off is judged, because brightness and colour are
+                # moving legitimately.
+                policy = self._detection_policy()
 
                 # Run detection on this single light
                 external_lights = self._manual_control_detector.check_external_control(
                     self.hass,
                     [entity_id],
                     self._state_ctrl,
-                    check_brightness=check_brightness,
-                    check_color=check_color,
-                    brightness_tolerance_pct=brightness_tol,
-                    kelvin_tolerance=kelvin_tol,
+                    check_brightness=policy.check_brightness,
+                    check_color=policy.check_color,
+                    brightness_tolerance_pct=policy.brightness_tolerance_pct,
+                    kelvin_tolerance=policy.kelvin_tolerance,
                 )
 
                 if not external_lights:
@@ -1106,11 +1309,13 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                     entity_id,
                 )
 
-                if in_sleep_ramp or in_wakeup_ramp:
+                if self._in_ramp():
                     # "Ich bin müde, ich will aus": an external OFF ends the
                     # whole ramp and jumps into the block, exactly like the
                     # wall-button turn_off with hold.
-                    if in_sleep_ramp and sleep_handler is not None:
+                    sleep_handler = self._get_mode_handler(MODE_SLEEP)
+                    wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
+                    if sleep_handler is not None and sleep_handler.is_sleep_active():
                         sleep_handler.interrupt_into_block()
                     elif wakeup_handler is not None:
                         wakeup_handler.interrupt_into_block()
@@ -1621,13 +1826,23 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         self._notify_monitors()
 
     def release_hold(self) -> None:
-        """Drop the holds and restore the phase's configured state.
+        """Drop the holds and put the lights into the state a release promises.
 
         A hold is a visitor's deviation from the configured behavior, so
         ending it returns to that behavior: the brightness dials fall back to
         their configured starting points (exactly as entering the phase does)
         and the mode is applied again from those defaults.
+
+        "Applied again" must hold in every situation, including the common one
+        where the room is dark and nobody moves. So the release always takes
+        exactly one branch of :meth:`_reapply_after_release` and reports it,
+        and every light it freed without commanding stays with a truthful
+        expectation (see :meth:`_ensure_truthful_expectations`).
         """
+        # Collected before clearing: once the holds are gone the set is lost,
+        # and both reasons — a visitor's command and a detected intervention —
+        # must leave a defined state behind.
+        released = sorted(self._state_ctrl.get_held_lights_with_reasons())
         self._state_ctrl.clear_holds()
         self._reset_night_brightness_dial(apply=False)
         self._reset_day_brightness_dial(apply=False)
@@ -1635,28 +1850,140 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         # having commanded is stale; without this the damping would compare
         # the new target against a fiction and skip.
         self._forget_applied_values()
-        # A service-started sleep/wake-up outranks the schedule, exactly as
-        # it does on the tick; let it re-apply its own values.
-        if not self._run_service_mode():
-            if (
-                self._schedule.get_current_mode() == MODE_NIGHT
-                and self.has_motion_sensor()
-            ):
-                # A motion-lit night: releasing the hold means "the automation
-                # takes over again". Re-apply the night target to the released
-                # lights — they still show the scene's values and would
-                # otherwise be re-held on the spot — and, if motion has
-                # cleared meanwhile, turn them off like the off timer would.
-                night_handler = self._get_mode_handler(MODE_NIGHT)
-                if night_handler is not None:
-                    if self._motion.has_motion_now():
-                        night_handler.reapply_after_release()
-                    lights_to_off, _ = night_handler._off_timer_result()
-                    if lights_to_off:
-                        night_handler._turn_off_lights(lights_to_off)
-            else:
-                self._apply_mode_now(self._schedule.get_current_mode())
+
+        branch, commanded = self._reapply_after_release(released)
+        adopted = self._ensure_truthful_expectations(released, commanded)
+
+        _LOGGER.info(
+            "[%s] hold released: %d light(s), branch=%s, commanded=%d, adopted=%d",
+            self._instance_name,
+            len(released),
+            branch,
+            len(commanded),
+            len(adopted),
+        )
         self._notify_monitors()
+
+    def _reapply_after_release(self, released: list[str]) -> tuple[str, list[str]]:
+        """Restore the phase after a release: one branch, and what it commanded.
+
+        The release moment decides which branch applies — never whether
+        anything happens at all:
+
+        ``service-ramp``
+            A service-started sleep or wake-up owns the values; its ramp keeps
+            running and is not disturbed.
+        ``night-motion``
+            Motion-lit night with motion now: the released lights are handed
+            back to us and re-applied to the night target.
+        ``night-off``
+            Motion-lit night without motion — the normal case after the
+            television goes off: the off timer's selection is switched off.
+        ``night-adopt``
+            ... and it selected nothing, so nothing is commanded and the
+            current state is adopted.
+        ``mode-apply``
+            Day, or night without a motion sensor: whatever the next tick
+            would apply.
+
+        A light counts as commanded when the applier recorded a new expected
+        state for it: that write is what detection compares against, so it is
+        the honest answer to "did we still command this light?".
+        """
+        stamps = {lid: self._expected_stamp(lid) for lid in released}
+
+        if self._run_service_mode():
+            branch = "service-ramp"
+        elif (
+            self._schedule.get_current_mode() == MODE_NIGHT
+            and self.has_motion_sensor()
+        ):
+            night_handler = self._get_mode_handler(MODE_NIGHT)
+            if night_handler is None:
+                branch = "night-adopt"
+            elif self._motion.has_motion_now():
+                # Hand the released lights back to us *before* applying. A
+                # light we do not control makes the motion apply abort the
+                # whole room as "somebody else owns this" and command nothing,
+                # which leaves the old expectation in place — the scene's
+                # values then read as a fresh intervention minutes later.
+                self._state_ctrl.mark_controlled(released)
+                night_handler.reapply_after_release()
+                branch = "night-motion"
+            else:
+                lights_to_off, _ = night_handler._off_timer_result()
+                if lights_to_off:
+                    night_handler._turn_off_lights(lights_to_off)
+                    branch = "night-off"
+                else:
+                    branch = "night-adopt"
+        else:
+            self._apply_mode_now(self._schedule.get_current_mode())
+            branch = "mode-apply"
+
+        commanded = [
+            lid for lid in released if self._expected_stamp(lid) != stamps[lid]
+        ]
+        return branch, commanded
+
+    def _ensure_truthful_expectations(
+        self, released: list[str], commanded: list[str]
+    ) -> list[str]:
+        """Record what an uncommanded released light actually shows.
+
+        A release can end without commanding every light it freed (a service
+        ramp owns them, or the off timer selected nothing). The expectation
+        recorded before the hold then still describes the scene's values, and
+        the next state report reads as a fresh intervention — the hold is back
+        within minutes, locking the integration out of the room it just
+        reclaimed. So the expectation is brought up to date with reality.
+
+        Adoption is the honest statement "this is how the light looks and we
+        did not command it": it claims no ownership, touches no light list and
+        creates no hold. It only keeps the expectation from being older than
+        the release.
+        """
+        commanded_set = set(commanded)
+        adopted: list[str] = []
+        for lid in released:
+            if lid in commanded_set:
+                continue
+            state = self.hass.states.get(lid)
+            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                # Nothing truthful to record; the next real report is judged
+                # against whatever is there, which is the lesser evil.
+                continue
+            on = state.state == STATE_ON
+            attrs = getattr(state, "attributes", {}) or {}
+            brightness = brightness_to_pct(attrs.get("brightness")) if on else None
+            self._state_ctrl.set_expected_state(
+                lid,
+                on=on,
+                brightness_pct=brightness,
+                kelvin=self._reported_kelvin(attrs) if on else None,
+            )
+            # Our own adoption must never read as a change we did not make.
+            self._manual_control_detector.mark_applied([lid])
+            _LOGGER.debug(
+                "[%s] %s: adopted current state after release (nothing was commanded)",
+                self._instance_name,
+                lid,
+            )
+            adopted.append(lid)
+        return adopted
+
+    def _expected_stamp(self, light_id: str) -> float | None:
+        """When the expectation for *light_id* was recorded, None if never."""
+        expected = self._state_ctrl.get_expected_state(light_id)
+        return expected.get("timestamp") if expected is not None else None
+
+    @staticmethod
+    def _reported_kelvin(attrs: dict) -> int | None:
+        """The colour temperature a light reports, None when it reports none."""
+        kelvin = attrs.get("color_temp_kelvin")
+        if kelvin is not None:
+            return int(kelvin)
+        return mired_to_kelvin(attrs.get("color_temp"))
 
     def has_dialled_brightness(self) -> bool:
         """True when the current mode's brightness dial is dialled in.
@@ -1783,6 +2110,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         _LOGGER.debug("[%s] Switch ON, starting listeners", self._instance_name)
         await self._state_ctrl.async_load()
         self._state_ctrl.prune(self._lights.get_lights_list())
+        # A hold restored from storage predates this start; drop it if the
+        # light no longer shows the intervention it was recorded for.
+        self._revalidate_restored_holds()
         # Taking over: the lights' current state predates our control, so the
         # moment we start listening it must not be read as an external change.
         self._manual_control_detector.mark_applied(self._lights.get_lights_list())
@@ -1859,6 +2189,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         if self._attr_is_on:
             await self._state_ctrl.async_load()
             self._state_ctrl.prune(self._lights.get_lights_list())
+            # A hold restored from storage predates this start; drop it if the
+            # light no longer shows the intervention it was recorded for.
+            self._revalidate_restored_holds()
             # At HA startup the just-restored lights report their state
             # asynchronously, and colour bulbs briefly show an RGB/HS/XY colour
             # before the persisted colour temperature lands (the first tick

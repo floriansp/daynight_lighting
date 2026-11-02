@@ -200,6 +200,55 @@ def fake_store() -> FakeStore:
 
 
 # ---------------------------------------------------------------------------
+#  Light state-change listener helpers (event-driven detection tests)
+# ---------------------------------------------------------------------------
+
+def capture_light_listener(monkeypatch) -> list[tuple[list[str], object]]:
+    """Capture the callbacks ``_start_listeners`` subscribes for light changes.
+
+    Returns the capture list; feed it to :func:`light_listener` to get the
+    callback, then fire a report through :func:`report_light_state`.
+    """
+    from custom_components.daynight_lighting import switch as switch_module
+
+    captured: list[tuple[list[str], object]] = []
+
+    def _track(_hass, entity_ids, action):
+        captured.append((list(entity_ids), action))
+        return lambda: None
+
+    monkeypatch.setattr(switch_module, "async_track_state_change_event", _track)
+    return captured
+
+
+def light_listener(captured, probe: str = "light.a"):
+    """The subscribed callback that watches the configured lights."""
+    for entity_ids, action in captured:
+        if probe in entity_ids:
+            return action
+    raise AssertionError("no light state-change listener was subscribed")
+
+
+def report_light_state(listener, entity_id, state) -> None:
+    """Fire a light state change the way HA's bus would."""
+    listener(FakeEvent("state_changed", {"entity_id": entity_id, "new_state": state}))
+
+
+def stub_wakeup_inactive(monkeypatch) -> None:
+    """Make the wake-up ramp report "not running" without asking the schedule.
+
+    Detection asks the ramp handlers whether a ramp is moving the values, and
+    the wake-up handler answers that from the real schedule's sunrise times.
+    Tests that pin the mode with a stub schedule cannot answer it, so the ramp
+    is patched on the class: ``_start_listeners`` rebuilds the handlers from
+    the options, and an instance patch would be lost with them.
+    """
+    from custom_components.daynight_lighting.handlers.wakeup import WakeUpModeHandler
+
+    monkeypatch.setattr(WakeUpModeHandler, "is_active", lambda self: False)
+
+
+# ---------------------------------------------------------------------------
 #  Switch factory fixture (functional tests)
 # ---------------------------------------------------------------------------
 

@@ -205,8 +205,15 @@ that wants the room announces itself with a `hold: true` service call instead,
 and while a light is held a wall button can still dim, because nothing here is
 fighting it.
 
-However a hold ends, the mode's values are applied immediately and the
-integration forgets what it last commanded.
+However a hold ends, the phase's behaviour is restored immediately and the
+integration forgets what it last commanded. That means the released lights end
+up in the state the next tick would produce: the mode's values by day, and at
+night with a motion sensor they follow motion again, so releasing while nobody
+moves turns them off. A light the release does not command keeps the values it
+is showing — recorded as the expected state, so it is not mistaken for a fresh
+intervention minutes later. Every release logs which case it took
+(`hold released: N light(s), branch=…, commanded=…, adopted=…`); see
+[FLOW.md](docs/FLOW.md#the-life-of-a-hold) for the full matrix.
 
 To hold every light of an instance at once (the replacement for the old
 "manual control" switch), call `daynight_lighting.hold_all`; drop it again
@@ -570,6 +577,12 @@ placed on the lights, so the day/night automation takes over again. It also
 resets the brightness dials to their configured starting points, so the room
 returns to the configured state rather than a value a visitor dialled in.
 Normally the hold clears by itself on the next mode transition.
+
+Releasing at night restores what the next tick would do, and with a motion
+sensor that is motion-driven: with nobody moving, the released lights are
+switched off rather than taken back to the night brightness. The log line names
+the case that ran, and [FLOW.md](docs/FLOW.md#the-life-of-a-hold) lists them
+all.
 
 ```yaml
 service: daynight_lighting.release_hold

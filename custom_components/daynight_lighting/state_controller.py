@@ -14,6 +14,7 @@ Home Assistant restarts.  Uses HA's ``Store`` for file-based persistence.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, TYPE_CHECKING
 
 from homeassistant.helpers.storage import Store
@@ -63,9 +64,13 @@ class StateController:
             self._lights_we_control = set(data.get("lights_we_control", []))
             self._held_lights = self._migrate_held_lights(data.get("held_lights"))
             self._lux_calibration = data.get("lux_calibration")
-            # Load expected states, filtering out stale entries (older than 24 hours)
+            # Load expected states, filtering out stale entries (older than 24
+            # hours). The timestamp is written by ``set_expected_state`` with
+            # ``time.time()``, so it must be compared in the same clock: the
+            # event loop's monotonic time would make the difference negative
+            # and the filter would never drop anything.
             expected_states = data.get("expected_states", {})
-            now = self._hass.loop.time() if hasattr(self._hass, 'loop') else 0
+            now = time.time()
             self._expected_states = {
                 k: v for k, v in expected_states.items()
                 if isinstance(v, dict) and now - v.get("timestamp", 0) < 86400
@@ -272,7 +277,6 @@ class StateController:
             brightness_pct: Expected brightness (None if not controlling)
             kelvin: Expected color temperature (None if not controlling)
         """
-        import time
         self._expected_states[light_id] = {
             "on": on,
             "brightness_pct": brightness_pct,

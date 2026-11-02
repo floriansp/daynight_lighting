@@ -44,7 +44,7 @@ class ExpectedState:
     kelvin: int | None = None  # Expected color temp (None if not controlling)
 
 
-def _mired_to_kelvin(mired: int | None) -> int | None:
+def mired_to_kelvin(mired: int | None) -> int | None:
     """Convert mired to kelvin, tolerating malformed values.
 
     A non-numeric or zero mired value is not a usable colour temperature; it
@@ -114,6 +114,23 @@ class LightComparison:
     actual_kelvin: int | None = None
 
 
+@dataclass(frozen=True)
+class DetectionPolicy:
+    """How a light's state is judged at this moment.
+
+    Bundles the mode-dependent tolerances with the axes the user has left to
+    the integration (Control Brightness / Control Colour). The event-driven
+    detection and the startup re-validation of a restored hold both judge
+    with this, so one light is never measured by two different rulers — a
+    scene cannot be "matching" on one path and "diverging" on the other.
+    """
+
+    brightness_tolerance_pct: int
+    kelvin_tolerance: int
+    check_brightness: bool = True
+    check_color: bool = True
+
+
 def compare_light_to_target(
     attrs: dict,
     target_brightness_pct: int | None,
@@ -158,7 +175,7 @@ def compare_light_to_target(
 
     if check_color and target_kelvin is not None:
         color_mired = attrs.get("color_temp")
-        actual_kelvin = _mired_to_kelvin(color_mired)
+        actual_kelvin = mired_to_kelvin(color_mired)
         if actual_kelvin is not None:
             if abs(actual_kelvin - target_kelvin) > kelvin_tolerance:
                 color_differs = True

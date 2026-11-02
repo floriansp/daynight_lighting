@@ -92,9 +92,13 @@ as `detected` on divergence — with the same tolerances as the event detector
 
 **`release_hold()`** (button/service): clears all holds, resets the brightness
 dials to the configured values, forgets stored commands
-(`_forget_applied_values`), and re-applies the mode — in a motion-lit night via
-`reapply_after_release()` (actively brings lights back instead of holding them
-again immediately), otherwise via `_apply_mode_now()`.
+(`_forget_applied_values`), then restores the phase along exactly one branch of
+the release matrix — see [FLOW.md](FLOW.md#the-life-of-a-hold), which is the
+single description of it. Independently of the branch, every released light the
+release did **not** command has its current state adopted as the expected state,
+so no expectation can survive that is older than the release. The branch and
+the counts are logged (`hold released: N light(s), branch=…, commanded=…,
+adopted=…`).
 
 ## Known open points
 
@@ -103,5 +107,7 @@ again immediately), otherwise via `_apply_mode_now()`.
   "just commanded" context.
 - In the **night motion loop** a non-controlled light with "unexpected values"
   aborts the whole room (behaviour depends on the order of the light list).
+  The release path is not affected: it marks the released lights as ours
+  before re-applying, so that abort cannot fire there. The tick path still can.
 
 Neither is an acute bug, but both are candidates for a later cleanup round.

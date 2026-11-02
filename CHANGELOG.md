@@ -5,6 +5,42 @@ All notable changes to DayNight Lighting will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.44] - 2026-11-02
+
+### Added
+- Every hold release now logs which action was taken and how many released
+  lights were commanded or had their current state adopted:
+  `hold released: N light(s), branch=…, commanded=…, adopted=…`.
+
+### Fixed
+- Restored detected holds are now revalidated when an instance starts. A hold
+  is released if the light already matches the saved expected state, there is
+  no saved expectation, or the light reports `unavailable`/`unknown` at that
+  initial check. Lights that still differ remain held. This revalidation does
+  not change service-created holds.
+- If a light has not reported at startup, its detected hold is kept until a
+  real on/off state arrives and is checked against the expectation saved at
+  load time. Intermediate `unavailable`/`unknown` reports do not end this
+  deferred wait, and subsequent automation updates cannot overwrite the
+  comparison snapshot.
+- Saved expected light states older than 24 hours are now discarded on load.
+  The age check previously used the wrong clock and never removed stale entries.
+- Releasing a hold now restores a defined state instead of allowing the old
+  scene values to trigger a new hold minutes later. At night with motion
+  control, active motion reapplies the night target; without motion, lights
+  selected by the normal off logic are switched off. Any released light not
+  commanded keeps its current reported values, which are recorded as expected.
+  Taking over after a release no longer aborts the whole room's motion handling
+  because of a released light's scene values.
+- After a restart at night with a motion sensor, the startup guard could remain
+  active for the rest of the night, silently disabling external-control
+  detection. The guard now clears after the first tick while still protecting
+  the initial apply from false detection.
+- Motion shortly after sunset, before the day-to-night transition had run,
+  could falsely hold lights that still carried the integration's own day
+  values. The first motion now reapplies the night target instead of treating
+  those values as an external scene.
+
 ## [1.19.43] - 2026-10-30
 
 ### Fixed

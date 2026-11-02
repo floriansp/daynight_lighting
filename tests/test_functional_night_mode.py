@@ -429,3 +429,34 @@ class TestOffTimerResult:
 
         assert lights == []
         assert reason == "motion/presence still active"
+
+
+class TestMotionBeforeTheModeTick:
+    """Motion between sunset and the minute tick that switches the mode."""
+
+    def test_day_values_not_held_before_the_tick_switched_the_mode(
+        self, make_switch, fake_hass
+    ):
+        """Motion right after sunset must not hold lights still at day values.
+
+        The sun is down, so motion already acts as night, but the minute tick
+        has not run the day→night transition yet. The lights still carry the
+        day values we set ourselves; that is no scene and must not be held.
+        """
+        switch, *_ = make_switch(day_mode=False)
+        switch._last_mode = MODE_DAY  # the tick has not seen the sunset yet
+        switch._state_ctrl.mark_controlled(["light.a"])
+
+        # The light still sits at its day brightness (36% vs 80% night target).
+        fake_hass.states.set(
+            "light.a",
+            FakeState(
+                state="on",
+                attributes={"brightness": 92, "color_temp": 225},  # 36% of 255
+            ),
+        )
+        fake_hass.states.set("light.b", FakeState(state="off"))
+
+        switch._handle_motion_on()
+
+        assert not switch._state_ctrl.is_held("light.a")

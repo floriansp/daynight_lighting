@@ -256,6 +256,15 @@ class NightModeHandler:
                 )
         return payload
 
+    def expect_previous_mode_values(self) -> None:
+        """Treat the next motion as the first one after entering night.
+
+        For motion that arrives after the sun is down but before the tick has
+        run the day->night transition: the lights still carry day values that
+        are ours, so they are re-applied instead of held as a scene.
+        """
+        self._reapply_instead_of_hold = True
+
     def handle_motion_on(self) -> None:
         """Night mode: motion/presence detected -> turn on lights."""
         self._apply_motion_on(reapply_diverged=False)

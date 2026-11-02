@@ -14,14 +14,26 @@ from typing import Any
 
 import pytest
 
-from custom_components.daynight_lighting.const import DOMAIN, MODE_DAY, MODE_NIGHT
+from custom_components.daynight_lighting.const import (
+    DOMAIN,
+    MODE_DAY,
+    MODE_NIGHT,
+    MODE_SLEEP,
+)
 from custom_components.daynight_lighting.manual_control import ManualControlDetector
 from custom_components.daynight_lighting.state_controller import (
     HOLD_REASON_DETECTED,
 )
 from custom_components.daynight_lighting.switch import DayNightLightingSwitch
 
-from tests.conftest import FakeToggle, FakeState
+from tests.conftest import (
+    FakeState,
+    FakeToggle,
+    capture_light_listener,
+    light_listener,
+    report_light_state,
+    stub_wakeup_inactive,
+)
 
 
 class MockEvent:
@@ -450,3 +462,62 @@ class TestTickMarksLightsApplied:
         day.tick()  # same target: nothing sent
 
         assert detector._last_applied_time == {}
+
+
+class TestStartupGuard:
+    """The first tick after a restart exempts its own apply — nothing more.
+
+    Detection stays off only while the handlers have not applied yet. A path
+    that returns before applying must still end the guard: a night with a
+    motion sensor is driven by motion events, not by the tick, so the guard
+    would otherwise silence external control for the whole night — a scene
+    would never be noticed and the room would keep whatever it was set to.
+    """
+
+    def _late_tick_switch(self, make_switch, monkeypatch, mode: str):
+        switch, *_ = make_switch(day_mode=mode == MODE_DAY)
+        switch._schedule_override = SimpleNamespace(
+            get_current_mode=lambda: mode,
+            is_day_mode=lambda: mode == MODE_DAY,
+            get_mode_and_time_for_log=lambda: ("at_time", "22:00"),
+        )
+        stub_wakeup_inactive(monkeypatch)
+        switch._first_tick_after_startup = True
+        return switch
+
+    def test_motion_lit_night_tick_ends_the_guard(self, make_switch, fake_hass, monkeypatch):
+        switch = self._late_tick_switch(make_switch, monkeypatch, MODE_NIGHT)
+        fake_hass.states.set("binary_sensor.motion", FakeState(state="off"))
+
+        switch._handle_tick()
+
+        assert switch._first_tick_after_startup is False
+
+    def test_service_mode_tick_ends_the_guard(self, make_switch, monkeypatch):
+        switch = self._late_tick_switch(make_switch, monkeypatch, MODE_DAY)
+        sleep = switch._get_mode_handler(MODE_SLEEP)
+        monkeypatch.setattr(sleep, "is_sleep_active", lambda: True)
+
+        switch._handle_tick()
+
+        assert switch._first_tick_after_startup is False
+
+    def test_a_light_change_after_that_tick_is_detected(
+        self, make_switch, fake_hass, monkeypatch
+    ):
+        """The consequence: the first scene of the night is still noticed."""
+        switch = self._late_tick_switch(make_switch, monkeypatch, MODE_NIGHT)
+        fake_hass.states.set("binary_sensor.motion", FakeState(state="off"))
+        switch._state_ctrl.set_expected_state("light.a", on=True, brightness_pct=20, kelvin=2700)
+        switch._handle_tick()
+
+        captured = capture_light_listener(monkeypatch)
+        switch._start_listeners()
+        listener = light_listener(captured)
+        switch._manual_control_detector._last_applied_time.clear()
+
+        scene = FakeState(state="on", attributes={"brightness": 102, "color_temp_kelvin": 3000})
+        fake_hass.states.set("light.a", scene)
+        report_light_state(listener, "light.a", scene)
+
+        assert switch._state_ctrl.is_held("light.a")

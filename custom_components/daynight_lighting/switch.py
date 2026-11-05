@@ -8,13 +8,11 @@ delegates to the mode handlers. The three auxiliary switches live in
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
-from homeassistant.components.light import ATTR_BRIGHTNESS_PCT
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo
@@ -24,6 +22,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .action_scheduler import ActionScheduler
+from .brightness_dials import BrightnessDials
 from .circadian import CircadianController
 from .config import DayNightConfig
 from .const import (
@@ -56,38 +55,41 @@ from .control_switches import (
     DayNightLightingControlBrightnessSwitch,
     DayNightLightingControlColorSwitch,
 )
-from .domain.brightness import brightness_to_pct
 from .handlers import (
     DayModeHandler,
+    ModeHandler,
+    ModeHandlers,
     NightModeHandler,
     SleepModeHandler,
     WakeUpModeHandler,
 )
+from .expectation_adoption import ExpectationAdopter
+from .external_control import ExternalControlMonitor
+from .hold_validation import RestoredHoldValidator
 from .illuminance import IlluminanceReader
+from .instance_discovery import InstanceDiscovery
 from .instance_data import (
     KEY_BLOCK_WALL_BUTTONS,
     KEY_CONTROL_BRIGHTNESS,
     KEY_CONTROL_COLOR,
     KEY_MAIN_SWITCH,
-    KEY_DAY_BRIGHTNESS,
-    KEY_NIGHT_BRIGHTNESS,
     instance_entity,
     is_entity_on,
 )
-from .light_applier import LightApplier
 from .lights import LightsController
 from .manual_control import (
     DetectionPolicy,
     ExpectedState,
     ManualControlDetector,
-    compare_light_to_target,
-    mired_to_kelvin,
 )
 from .motion import MotionController
 from .parsing import calculate_compensated_lux
 from .protocols import ModeProvider
-from .schedule import DayNightSchedule
-from .state_controller import HOLD_REASON_DETECTED, StateController
+from .mode_schedule import DayNightSchedule
+from .state_controller import (
+    HOLD_REASON_SERVICE,
+    StateController,
+)
 from .transition_coordinator import TransitionCoordinator
 from .weather import WeatherReader
 
@@ -98,14 +100,6 @@ __all__ = [
 ]
 
 _LOGGER = logging.getLogger(__name__)
-
-# Safety-net re-scan interval for area discovery. Primary invalidation is
-# event-driven: the entity/device/area registries are listened to and drop the
-# cache the moment something changes (see ``_on_registry_changed``). This TTL
-# only re-syncs after a few minutes in case a registry event is ever missed,
-# so a newly added lamp or sensor is never silently ignored for long — but we
-# no longer re-scan every minute.
-DISCOVERY_TTL_SECONDS = 300
 
 # Quiet-period before a registry event stream is acted on. HA fires one
 # entity/device/area registry event per restored item at startup, so hundreds
@@ -214,16 +208,14 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         self._weather_instance: WeatherReader | None = None
         self._action_scheduler_instance: ActionScheduler | None = None
         self._state_ctrl_instance: StateController | None = None
-        self._mode_handlers_instance: dict[str, Any] | None = None
+        self._shared_deps_instance: SharedHandlerDeps | None = None
+        self._mode_handlers_instance: ModeHandlers | None = None
         self._transition_coordinator_instance: TransitionCoordinator | None = None
-        # (monotonic timestamp, discovery dict) — see _get_area_discovery()
-        self._discovery_cache: tuple[float, dict[str, Any]] | None = None
-        # Restored detected holds whose light had not reported yet, mapped to
-        # the expected state as it was at load. See _revalidate_restored_holds.
-        self._pending_hold_checks: dict[str, dict[str, Any] | None] = {}
-        # Last adopted entity set, used to detect registry changes — see
-        # _registry_snapshot() / _on_registry_changed().
-        self._last_registry_snapshot: tuple | None = None
+        self._discovery_instance: InstanceDiscovery | None = None
+        self._dials_instance: BrightnessDials | None = None
+        self._restored_holds_instance: RestoredHoldValidator | None = None
+        self._expectation_adopter_instance: ExpectationAdopter | None = None
+        self._external_control_instance: ExternalControlMonitor | None = None
         # Pending debounced registry re-scan, see _on_registry_changed().
         self._registry_debounce: Any | None = None
 
@@ -264,7 +256,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
         # Add area-based discovery info if enabled
         if cfg.is_area_based() and cfg.area_id:
-            discovery = self._get_area_discovery()
+            discovery = self._discovery.scan()
             attrs["area"] = discovery["area_name"]
             attrs["area_id"] = cfg.area_id
 
@@ -291,72 +283,6 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
         return attrs
 
-    def _get_area_discovery(self) -> dict[str, Any]:
-        """Area discovery, cached so the registries are scanned rarely.
-
-        Both the entity attributes and the sensor resolution read from here,
-        so the area registries are not re-scanned (and their DEBUG lines not
-        re-logged) on every state read or sensor event. The cache is dropped
-        on every options change and on every registry update (see
-        ``_on_registry_changed``); the TTL is only a safety net for a missed
-        event.
-        """
-        cfg = self._config
-        if not (cfg.is_area_based() and cfg.area_id):
-            return {}
-
-        now = time.monotonic()
-        if (
-            self._discovery_cache is not None
-            and now - self._discovery_cache[0] < DISCOVERY_TTL_SECONDS
-        ):
-            return self._discovery_cache[1]
-
-        from .area_discovery import (
-            get_area_name,
-            get_illuminance_sensors_in_area,
-            get_lights_in_area,
-            get_motion_sensors_in_area,
-        )
-
-        result = {
-            "area_name": get_area_name(self.hass, cfg.area_id) or cfg.area_id,
-            "lights_in_area": get_lights_in_area(
-                self.hass, cfg.area_id, self._instance_name
-            ),
-            "motion_sensors": get_motion_sensors_in_area(
-                self.hass, cfg.area_id, self._instance_name
-            ),
-            "illuminance_sensors": get_illuminance_sensors_in_area(
-                self.hass, cfg.area_id, self._instance_name
-            ),
-        }
-        self._discovery_cache = (now, result)
-        return result
-
-    def _registry_snapshot(self) -> tuple:
-        """The entities this instance adopts via area discovery.
-
-        A tuple of sorted tuples ``(lights, motion_sensors,
-        illuminance_sensors)`` so a registry change is detected by inequality.
-        Empty tuple when the instance is not area-based. The lights reflect
-        what is *controlled*: the explicitly included lights, or — when none
-        are included — every discovered area light.
-        """
-        cfg = self._config
-        if not (cfg.is_area_based() and cfg.area_id):
-            return ()
-        discovery = self._get_area_discovery()
-        if cfg.included_lights:
-            lights = tuple(sorted(cfg.included_lights))
-        else:
-            lights = tuple(sorted(discovery["lights_in_area"]))
-        return (
-            lights,
-            tuple(sorted(discovery["motion_sensors"])),
-            tuple(sorted(discovery["illuminance_sensors"])),
-        )
-
     @callback
     def _on_registry_changed(self, _ev: Any) -> None:
         """Debounce registry events into a single re-discovery pass.
@@ -371,7 +297,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         """
         if not self._attr_is_on:
             return
-        if not (self._config.is_area_based() and self._config.area_id):
+        if not self._discovery.is_area_based():
             return
 
         if self._registry_debounce is not None:
@@ -384,9 +310,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
     def _apply_registry_change(self) -> None:
         """Run the debounced re-discovery (see :meth:`_on_registry_changed`)."""
         self._registry_debounce = None
-        self._discovery_cache = None
-        new_snapshot = self._registry_snapshot()
-        if new_snapshot == self._last_registry_snapshot:
+        if not self._discovery.adoption_changed():
             return
 
         _LOGGER.info(
@@ -400,8 +324,24 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
     # ---------------------------------------------------------------
 
     @property
+    def _dials(self) -> BrightnessDials:
+        """The brightness dials; they look their entities up on every use."""
+        if self._dials_instance is None:
+            self._dials_instance = BrightnessDials(self._entity)
+        return self._dials_instance
+
+    @property
+    def _discovery(self) -> InstanceDiscovery:
+        """Area discovery of this instance; reads the current options each time."""
+        if self._discovery_instance is None:
+            self._discovery_instance = InstanceDiscovery(
+                self.hass, lambda: self._config, self._instance_name
+            )
+        return self._discovery_instance
+
+    @property
     def _illuminance(self) -> IlluminanceReader:
-        sensor_ids = self._resolve_sensor_ids("light_sensor")
+        sensor_ids = self._discovery.resolve_sensor_ids("light_sensor")
 
         # Re-create reader if sensors changed (e.g., discovery found sensors after startup)
         current_sensors = set(sensor_ids)
@@ -421,60 +361,6 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 light_sensor_entity_id=sensor_ids,
             )
         return self._illuminance_reader
-
-    def _resolve_sensor_ids(self, kind: str) -> list[str]:
-        """Sensors of *kind* ("light_sensor" or "motion_sensor") in effect.
-
-        With area discovery the sensors found in the area are used, plus the
-        one configured by hand unless discovery already found it. Without it
-        only the configured sensor counts.
-        """
-        cfg = self._config
-        manual = getattr(cfg, kind)
-        if cfg.is_area_based() and cfg.area_id:
-            discovery = self._get_area_discovery()
-            sensor_ids = list(
-                discovery["motion_sensors"]
-                if kind == "motion_sensor"
-                else discovery["illuminance_sensors"]
-            )
-            # Motion sensors the user opted out of (e.g. a camera AI-detection
-            # sensor that latches on) are dropped from the discovered set. The
-            # explicitly configured manual sensor below is still honoured.
-            if kind == "motion_sensor" and cfg.excluded_motion_sensors:
-                excluded_lower = {s.lower() for s in cfg.excluded_motion_sensors}
-                kept = [s for s in sensor_ids if s.lower() not in excluded_lower]
-                if len(kept) != len(sensor_ids):
-                    _LOGGER.debug(
-                        "[%s] Area discovery: excluded %d motion sensor(s)",
-                        self._instance_name,
-                        len(sensor_ids) - len(kept),
-                    )
-                sensor_ids = kept
-            if manual:
-                manual_list = [manual] if isinstance(manual, str) else list(manual)
-                existing_lower = {s.lower() for s in sensor_ids}
-                for manual_sensor in manual_list:
-                    if manual_sensor.lower() not in existing_lower:
-                        sensor_ids.append(manual_sensor)
-                        existing_lower.add(manual_sensor.lower())
-                        _LOGGER.debug(
-                            "[%s] Area discovery: Added manual %s %s to discovered sensors",
-                            self._instance_name,
-                            kind,
-                            manual_sensor,
-                        )
-                    else:
-                        _LOGGER.debug(
-                            "[%s] Area discovery: Manual %s %s already in discovered sensors, skipping",
-                            self._instance_name,
-                            kind,
-                            manual_sensor,
-                        )
-            return sensor_ids
-        if manual:
-            return [manual] if isinstance(manual, str) else list(manual)
-        return []
 
     @property
     def _schedule(self) -> ModeProvider:
@@ -498,7 +384,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
     @property
     def _motion(self) -> MotionController:
-        sensor_ids = self._resolve_sensor_ids("motion_sensor")
+        sensor_ids = self._discovery.resolve_sensor_ids("motion_sensor")
 
         # Re-create controller if sensors changed (e.g., discovery found sensors after startup)
         current_sensors = set(sensor_ids)
@@ -578,14 +464,60 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         return self._state_ctrl_instance
 
     @property
-    def _handlers(self) -> dict[str, Any]:
+    def _restored_holds(self) -> RestoredHoldValidator:
+        """Validator of restored holds; survives option changes like the state.
+
+        Its pending checks describe what was restored at load, so rebuilding
+        it with the option caches would silently forget them.
+        """
+        if self._restored_holds_instance is None:
+            self._restored_holds_instance = RestoredHoldValidator(
+                self.hass,
+                self._state_ctrl,
+                self._detection_policy,
+                self._instance_name,
+            )
+        return self._restored_holds_instance
+
+    @property
+    def _expectation_adopter(self) -> ExpectationAdopter:
+        """Adopter of uncommanded lights; follows the detector it reports to."""
+        if self._expectation_adopter_instance is None:
+            self._expectation_adopter_instance = ExpectationAdopter(
+                self.hass,
+                self._state_ctrl,
+                self._manual_control_detector.mark_applied,
+                self._instance_name,
+            )
+        return self._expectation_adopter_instance
+
+    @property
+    def _external_control(self) -> ExternalControlMonitor:
+        """Detector of foreign interventions; follows the detector it uses."""
+        if self._external_control_instance is None:
+            self._external_control_instance = ExternalControlMonitor(
+                self.hass,
+                self._state_ctrl,
+                self._manual_control_detector,
+                self._restored_holds,
+                self._detection_policy,
+                self._in_ramp,
+                self._interrupt_ramps,
+                lambda: self._first_tick_after_startup,
+                self._instance_name,
+            )
+        return self._external_control_instance
+
+    @property
+    def _handlers(self) -> ModeHandlers:
         """Get mode handlers, recreating if invalidated."""
         if self._mode_handlers_instance is None:
             self._mode_handlers_instance = self._create_mode_handlers()
         return self._mode_handlers_instance
 
-    def _get_mode_handler(self, mode: str) -> Any | None:
-        return self._handlers.get(mode)
+    def _get_mode_handler(self, mode: str | None) -> ModeHandler | None:
+        """The handler routing by mode identifier; typed access is ``_handlers``."""
+        return self._handlers.for_mode(mode)
 
     @property
     def _transition_coordinator(self) -> TransitionCoordinator:
@@ -594,10 +526,19 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             self._transition_coordinator_instance = self._create_transition_coordinator()
         return self._transition_coordinator_instance
 
-    def _create_mode_handlers(self) -> dict[str, Any]:
-        """Create mode handlers with current configuration."""
-        cfg = self._config
-        shared = SharedHandlerDeps(
+    @property
+    def _shared_deps(self) -> SharedHandlerDeps:
+        """What the mode handlers share, rebuilt with the option caches.
+
+        Its ``light_applier`` is the one applier of the instance's own light
+        changes, so the switch and the handlers record commands the same way.
+        """
+        if self._shared_deps_instance is None:
+            self._shared_deps_instance = self._create_shared_deps()
+        return self._shared_deps_instance
+
+    def _create_shared_deps(self) -> SharedHandlerDeps:
+        return SharedHandlerDeps(
             hass=self.hass,
             instance_name=self._instance_name,
             lights=self._lights,
@@ -608,28 +549,32 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             on_applied=self.record_applied_target,
             mark_applied=self._manual_control_detector.mark_applied,
             is_in_grace_period=self._manual_control_detector.is_in_grace_period,
-            get_night_brightness=self._get_night_brightness,
-            get_day_brightness=self._get_day_brightness,
+            get_night_brightness=self._dials.dialled_in_night,
+            get_day_brightness=self._dials.dialled_in_day,
             get_held_lights=self._state_ctrl.get_held_lights,
             is_safety_room_on=self._is_safety_room_on,
         )
 
-        return {
-            MODE_DAY: DayModeHandler(
+    def _create_mode_handlers(self) -> ModeHandlers:
+        """Create mode handlers with current configuration."""
+        cfg = self._config
+        shared = self._shared_deps
+        return ModeHandlers(
+            day=DayModeHandler(
                 shared=shared,
                 config=cfg.day_mode,
                 illuminance=self._illuminance,
                 weather=self._weather,
                 circadian=self._circadian,
             ),
-            MODE_NIGHT: NightModeHandler(
+            night=NightModeHandler(
                 shared=shared,
                 config=cfg.night_mode,
                 motion=self._motion,
                 action_scheduler=self._action_scheduler,
                 circadian=self._circadian,
             ),
-            MODE_SLEEP: SleepModeHandler(
+            sleep=SleepModeHandler(
                 shared=shared,
                 config=cfg.sleep_mode,
                 illuminance=self._illuminance,
@@ -638,7 +583,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 schedule=self._schedule,
                 circadian=self._circadian,
             ),
-            MODE_WAKEUP: WakeUpModeHandler(
+            wakeup=WakeUpModeHandler(
                 shared=shared,
                 config=cfg.wake_up_mode,
                 illuminance=self._illuminance,
@@ -647,14 +592,14 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 day_mode_config=cfg.day_mode,
                 night_mode_config=cfg.night_mode,
             ),
-        }
+        )
 
     def _create_transition_coordinator(self) -> TransitionCoordinator:
         """Create transition coordinator with current handlers."""
         return TransitionCoordinator(
             hass=self.hass,
             instance_name=self._instance_name,
-            handlers=self._handlers,
+            handlers=self._handlers.by_mode(),
             lights=self._lights,
             motion=self._motion,
             state_ctrl=self._state_ctrl,
@@ -680,11 +625,14 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         self._lights_instance = None
         self._circadian_instance = None
         self._manual_control_detector_instance = None
+        self._expectation_adopter_instance = None
+        self._external_control_instance = None
         self._weather_instance = None
+        self._shared_deps_instance = None
         self._mode_handlers_instance = None
         self._transition_coordinator_instance = None
-        self._discovery_cache = None
-        self._last_registry_snapshot = None
+        self._discovery.invalidate()
+        self._discovery.forget_adopted()
         _LOGGER.debug(
             "[%s] Invalidated option caches, schedule, and mode handlers",
             self._instance_name,
@@ -703,40 +651,6 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
     def _is_control_color_on(self) -> bool:
         return is_entity_on(self._entity(KEY_CONTROL_COLOR), default=True)
 
-    def _night_brightness_dial(self) -> Any | None:
-        """The night brightness number entity, None before it is set up."""
-        return self._entity(KEY_NIGHT_BRIGHTNESS)
-
-    def _get_night_brightness(self) -> int | None:
-        """Dialled-in night brightness, None when nobody has dialled one in."""
-        dial = self._night_brightness_dial()
-        if dial is None:
-            return None
-        return getattr(dial, "dialled_in_value", None)
-
-    def _reset_night_brightness_dial(self, *, apply: bool = True) -> None:
-        """Drop a dialled-in night brightness, back to the configured one."""
-        dial = self._night_brightness_dial()
-        if dial is not None:
-            dial.reset(apply=apply)
-
-    def _day_brightness_dial(self) -> Any | None:
-        """The day brightness number entity, None before it is set up."""
-        return self._entity(KEY_DAY_BRIGHTNESS)
-
-    def _get_day_brightness(self) -> int | None:
-        """Dialled-in day brightness, None when nobody has dialled one in."""
-        dial = self._day_brightness_dial()
-        if dial is None:
-            return None
-        return getattr(dial, "dialled_in_value", None)
-
-    def _reset_day_brightness_dial(self, *, apply: bool = True) -> None:
-        """Drop a dialled-in day brightness, back to the configured one."""
-        dial = self._day_brightness_dial()
-        if dial is not None:
-            dial.reset(apply=apply)
-
     def has_lux_sensor(self) -> bool:
         """True if this instance regulates against a LUX measurement.
 
@@ -753,6 +667,15 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         """
         return self._motion.get_motion_sensor_entity() is not None
 
+    def _is_motion_lit(self, mode: str) -> bool:
+        """True when *mode* is a night that motion, not the clock, drives.
+
+        The one definition of "motion-lit night": the tick, the release and
+        the safety lock all ask it, so they cannot disagree about when the
+        lights follow the motion sensor.
+        """
+        return mode == MODE_NIGHT and self.has_motion_sensor()
+
     def is_wall_buttons_blocked(self) -> bool:
         """True when the wall-button services must be ignored (safety lock).
 
@@ -763,10 +686,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         block = self._entity(KEY_BLOCK_WALL_BUTTONS)
         if not is_entity_on(block, default=False):
             return False
-        return (
-            self._schedule.get_current_mode() == MODE_NIGHT
-            and self.has_motion_sensor()
-        )
+        return self._is_motion_lit(self._schedule.get_current_mode())
 
     def _is_safety_room_on(self) -> bool:
         """True while the safety room (force defaults) is armed.
@@ -803,12 +723,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
     def _in_ramp(self) -> bool:
         """True while a sleep or wake-up ramp is moving the values itself."""
-        sleep_handler = self._get_mode_handler(MODE_SLEEP)
-        wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
-        return bool(
-            (sleep_handler is not None and sleep_handler.is_sleep_active())
-            or (wakeup_handler is not None and wakeup_handler.is_active())
-        )
+        return self._handlers.sleep.is_sleep_active() or self._handlers.wakeup.is_active()
 
     def _detection_policy(self) -> DetectionPolicy:
         """The tolerances and axes a light is judged with right now.
@@ -830,170 +745,10 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             check_color=not in_ramp and self._is_control_color_on(),
         )
 
-    def _hold_release_reason(
-        self,
-        state: Any,
-        expected: dict[str, Any] | None,
-        policy: DetectionPolicy,
-    ) -> str | None:
-        """Why a detected hold no longer protects *state*, or None to keep it.
-
-        The single decision, shared by the startup re-validation and by the
-        deferred check once a silent lamp reports. The caller passes a real
-        (on or off) state; an unusable state is the caller's business, because
-        "no evidence yet" means something different on each path.
-
-        The hold stays as long as the light still differs from what we
-        expected: an off light we wanted on is the user keeping the room dark,
-        and any brightness/colour outside tolerance is an intervention. Only a
-        light that is where we left it has nothing left to protect.
-        """
-        if expected is None:
-            return "no expected state"
-
-        actual_on = state.state == STATE_ON
-        if expected.get("on", False) != actual_on:
-            return None
-        if not actual_on:
-            return "matched expected state"
-
-        comparison = compare_light_to_target(
-            getattr(state, "attributes", {}) or {},
-            expected.get("brightness_pct"),
-            expected.get("kelvin"),
-            brightness_tolerance_pct=policy.brightness_tolerance_pct,
-            kelvin_tolerance=policy.kelvin_tolerance,
-            check_brightness=policy.check_brightness,
-            check_color=policy.check_color,
-        )
-        if comparison.brightness_differs or comparison.color_differs:
-            return None
-        return "matched expected state"
-
-    def _revalidate_restored_holds(self) -> None:
-        """Judge the detected holds that were restored from storage.
-
-        A ``detected`` hold survives a restart and a phase change and ends
-        only through an explicit release, so after a restart it may keep us
-        off a light whose intervention is long gone. Called from both load
-        paths right after ``prune`` and before ``mark_applied``: only holds
-        whose light already matches are released, so the grace period that
-        follows cannot turn a release into a false detection.
-
-        A lamp that has not reported yet cannot be judged, so its hold is kept
-        and handed to ``_revalidate_pending_holds``. A lamp that reports
-        *unavailable* is different: the device is there and says it cannot
-        tell us anything, which is no evidence that the hold is still needed.
-        """
-        detected = [
-            lid
-            for lid, reason in self._state_ctrl.get_held_lights_with_reasons().items()
-            if reason == HOLD_REASON_DETECTED
-        ]
-        self._pending_hold_checks.clear()
-        if not detected:
-            return
-
-        policy = self._detection_policy()
-        stale: list[str] = []
-        for lid in detected:
-            state = self.hass.states.get(lid)
-            if state is None:
-                # Judge it when the lamp reports; see _revalidate_pending_holds.
-                # Copied, not referenced: the snapshot must not follow a later
-                # change to the live record (see _snapshot_expected).
-                self._pending_hold_checks[lid] = self._snapshot_expected(lid)
-                continue
-            if state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                reason = "unavailable"
-            else:
-                reason = self._hold_release_reason(
-                    state, self._state_ctrl.get_expected_state(lid), policy
-                )
-                if reason is None:
-                    continue
-            self._log_released_hold(lid, reason)
-            stale.append(lid)
-
-        if stale:
-            self._state_ctrl.release_hold(stale)
-
-    def _revalidate_pending_holds(self, lights: list[str] | None = None) -> None:
-        """Judge a deferred hold the moment its lamp reports.
-
-        At startup the switch is added before the lights report, so the hold
-        of a lamp that was still silent had to be deferred. It is judged
-        against the expected state *snapshotted at load*, not the live record:
-        the first tick rewrites that one before the lamps are back.
-
-        Called with the reporting *lights* from the state-change listener, and
-        without arguments from the first tick to also cover a report that
-        arrived between the load-time check and the subscription. An
-        ``unavailable``/``unknown`` report is no evidence either way, so the
-        hold keeps waiting — the light is uncontrollable meanwhile.
-        """
-        self._forget_released_holds()
-        if lights is None:
-            lights = list(self._pending_hold_checks)
-        else:
-            lights = [lid for lid in lights if lid in self._pending_hold_checks]
-        if not lights:
-            return
-
-        policy = self._detection_policy()
-        stale: list[str] = []
-        for lid in lights:
-            state = self.hass.states.get(lid)
-            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                continue
-            # Popped before the decision: a real report validates the hold once,
-            # whether it survives or not.
-            reason = self._hold_release_reason(
-                state, self._pending_hold_checks.pop(lid), policy
-            )
-            if reason is None:
-                continue
-            self._log_released_hold(lid, reason)
-            stale.append(lid)
-
-        if stale:
-            self._state_ctrl.release_hold(stale)
-
-    def _forget_released_holds(self) -> None:
-        """Drop pending entries whose hold ended while the lamp was silent."""
-        held = self._state_ctrl.get_held_lights_with_reasons()
-        self._pending_hold_checks = {
-            lid: expected
-            for lid, expected in self._pending_hold_checks.items()
-            if held.get(lid) == HOLD_REASON_DETECTED
-        }
-
-    def _snapshot_expected(self, light_id: str) -> dict[str, Any] | None:
-        """The expected state as it is right now, detached from the live record.
-
-        ``StateController.get_expected_state`` hands out its stored dict, so
-        keeping it would make the deferred check follow whatever the next tick
-        writes. Copying keeps the value the light is judged against the one
-        that was in effect when the hold was restored.
-        """
-        expected = self._state_ctrl.get_expected_state(light_id)
-        return dict(expected) if expected is not None else None
-
-    def _log_released_hold(self, light_id: str, reason: str) -> None:
-        """Log one released hold, one line per light."""
-        _LOGGER.info(
-            "[%s] Restored hold released for %s: %s",
-            self._instance_name,
-            light_id,
-            reason,
-        )
-
     def _forget_applied_values(self) -> None:
         """Let every mode handler drop its memory of its own commands."""
-        for mode in (MODE_DAY, MODE_NIGHT, MODE_SLEEP, MODE_WAKEUP):
-            handler = self._get_mode_handler(mode)
-            if handler is not None:
-                handler.forget_applied_values()
+        for handler in self._handlers:
+            handler.forget_applied_values()
 
     # ---------------------------------------------------------------
     #  Central tick
@@ -1013,11 +768,12 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
     def _tick_once(self) -> None:
         """One tick, without the startup guard."""
-        if self._first_tick_after_startup and self._pending_hold_checks:
+        self._release_expired_holds()
+        if self._first_tick_after_startup and self._restored_holds.has_pending:
             # The lamps report asynchronously. A report that arrived between
             # the load-time check and the subscription would otherwise leave
             # its hold unvalidated forever; judge it now, against the snapshot.
-            self._revalidate_pending_holds()
+            self._restored_holds.revalidate_pending()
         if self._run_service_mode():
             return
 
@@ -1052,16 +808,8 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 )
         self._last_mode = mode
 
-        # Night mode with motion sensor: motion controls lights, skip external control detection
-        # The motion sensor event handlers will turn lights on/off as needed
-        if mode == MODE_NIGHT and self._motion.get_motion_sensor_entity():
-            self._apply_mode_now(mode)
-            return  # Skip external control detection - motion is the primary controller
-
-        # NOTE: External control detection is now event-driven (v1.7.0)
-        # Detection happens in _on_light_state_change handler when lights report state changes.
-
-        # Dispatch to mode-specific handler
+        # External control detection is event-driven (see ExternalControlMonitor),
+        # so the tick only has to apply the mode.
         self._apply_mode_now(mode)
 
     def _run_service_mode(self) -> bool:
@@ -1071,10 +819,10 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         schedule's mode must not be applied: the sleep dimming, the dark
         block after it, and a wake-up started by service.
         """
-        sleep_handler = self._get_mode_handler(MODE_SLEEP)
+        sleep_handler = self._handlers.sleep
 
         # Priority 1: Check if sleep is currently active (dimming phase)
-        if sleep_handler and sleep_handler.is_sleep_active():
+        if sleep_handler.is_sleep_active():
             _LOGGER.debug(
                 "[%s] Tick: Sleep Mode active (dimming phase)",
                 self._instance_name,
@@ -1083,7 +831,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             return True
 
         # Priority 2: Check if sleep block is active (post-sleep OFF state)
-        if sleep_handler and sleep_handler.is_block_active():
+        if sleep_handler.is_block_active():
             mode = self._schedule.get_current_mode()
             if mode == MODE_DAY:
                 _LOGGER.info(
@@ -1092,7 +840,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 )
                 sleep_handler.clear_block()
             elif mode == MODE_NIGHT:
-                if self._motion.get_motion_sensor_entity() and self._motion.has_motion_now():
+                if self._is_motion_lit(mode) and self._motion.has_motion_now():
                     _LOGGER.info(
                         "[%s] Sleep Mode: Block cleared (motion detected)",
                         self._instance_name,
@@ -1112,8 +860,8 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 return True
 
         # Priority 3: Check if wake-up is service-triggered and active
-        wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
-        if wakeup_handler and wakeup_handler.is_service_triggered_active():
+        wakeup_handler = self._handlers.wakeup
+        if wakeup_handler.is_service_triggered_active():
             _LOGGER.debug(
                 "[%s] Tick: Wake-up Mode service-triggered active",
                 self._instance_name,
@@ -1129,14 +877,13 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         Night mode with a motion sensor is driven by motion rather than by
         the tick, so its lights are only touched while motion is present.
         """
-        handler = self._get_mode_handler(mode)
-        if handler is None:
-            return
-        if mode == MODE_NIGHT and self._motion.get_motion_sensor_entity():
+        if self._is_motion_lit(mode):
             if self._motion.has_motion_now():
-                handler.handle_motion_on()
+                self._handlers.night.handle_motion_on()
             return
-        handler.tick()
+        handler = self._get_mode_handler(mode)
+        if handler is not None:
+            handler.tick()
 
     def _handle_mode_transition(self, from_mode: str, to_mode: str) -> None:
         """Route mode transitions to transition coordinator (synchronous)."""
@@ -1153,23 +900,35 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         # Entering the night starts from the configured brightness again, so
         # that yesterday's dial does not carry into tonight. Reset before the
         # coordinator applies the new mode's values.
-        if to_mode == MODE_NIGHT:
-            self._reset_night_brightness_dial()
-        elif to_mode == MODE_DAY:
-            self._reset_day_brightness_dial()
+        self._dials.reset_for_mode(to_mode)
 
-        # A service hold (turn_on/turn_off with hold:true) only lives within
-        # its phase: entering the next phase lets the automation take over from
-        # a clean default again. A detected hold is different — it records a
-        # foreign intervention (a scene, a manual dim), so it survives the
-        # phase change and stays held until explicitly released.
-        self._state_ctrl.clear_holds(keep_detected=True)
-        self._notify_monitors()
+        self._clear_holds_entering(to_mode)
+        self.notify_monitors()
 
         if self._transition_coordinator is not None:
             # Call transition synchronously to avoid race with tick()
             # This ensures enter()/exit() complete before tick() runs
             self._transition_coordinator.transition_sync(from_mode, to_mode)
+
+    def _clear_holds_entering(self, mode: str) -> None:
+        """End the holds that do not outlive the start of *mode*.
+
+        A service hold (turn_on/turn_off with hold:true) only lives within its
+        phase: entering the next phase lets the automation take over from a
+        clean default again. A detected hold is different — it records a
+        foreign intervention (a scene, a manual dim), so it survives the phase
+        change unless the instance opts out. Both reasons can expire.
+
+        Sleep and wake-up are the exception: they are asked for, by the clock
+        or by an alarm, and a hold left over from the evening would keep them
+        from reaching the very lights they exist for. They end every hold.
+        """
+        self._state_ctrl.clear_holds(
+            keep_detected=(
+                self._config.detected_hold_survives_phase
+                and mode not in (MODE_SLEEP, MODE_WAKEUP)
+            )
+        )
 
     # ---------------------------------------------------------------
     #  Motion handling
@@ -1177,160 +936,46 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
     def _handle_motion_on(self) -> None:
         """Night mode: motion/presence detected → turn on lights."""
-        night_handler = self._get_mode_handler(MODE_NIGHT)
-        if night_handler is not None:
-            if self._last_mode == MODE_DAY:
-                # The clock already says night, but the tick has not run the
-                # day→night transition yet.
-                night_handler.expect_previous_mode_values()
-            night_handler.handle_motion_on()
+        night_handler = self._handlers.night
+        if self._last_mode == MODE_DAY:
+            # The clock already says night, but the tick has not run the
+            # day→night transition yet.
+            night_handler.expect_previous_mode_values()
+        night_handler.handle_motion_on()
 
     def _handle_motion_off(self) -> None:
         """Night mode: motion/presence cleared → schedule off timer."""
-        night_handler = self._get_mode_handler(MODE_NIGHT)
-        if night_handler is not None:
-            night_handler.handle_motion_off()
+        self._handlers.night.handle_motion_off()
 
     # ---------------------------------------------------------------
     #  Listeners
     # ---------------------------------------------------------------
 
     def _start_listeners(self) -> None:
-        """Subscribe to sensor changes and per-minute tick."""
+        """Subscribe to sensor changes and per-minute tick, then apply once."""
         self._stop_listeners()
         self._invalidate_option_caches()
-        hass = self.hass
 
-        # Load LUX calibration
         lux_cal = self._state_ctrl.get_lux_calibration()
         if lux_cal is not None:
             self._illuminance.set_lux_calibration(lux_cal)
 
+        self._subscribe()
+
+        # Record the adopted entity set now, so registry events only trigger a
+        # re-discover when that set actually changes.
+        self._discovery.remember_adopted()
+
+        self._apply_initial_mode()
+
+    def _subscribe(self) -> None:
+        """Listen to the sensors, the lights, the clock and the registries."""
+        hass = self.hass
+
         light_sensors = self._illuminance.get_light_sensor_entities()
-        motion_sensors = self._motion.get_motion_sensor_entities()
-
-        @callback
-        def _on_tick(_: Any = None) -> None:
-            if not self._attr_is_on:
-                return
-            try:
-                self._handle_tick()
-            except Exception:
-                _LOGGER.exception(
-                    "[%s] Error in _handle_tick",
-                    self._instance_name,
-                )
-            # The LUX mirror sensor reads the raw sensor state, so it must
-            # refresh whenever the underlying reading (or the minute tick) runs.
-            self._notify_monitors()
-
-        @callback
-        def _on_motion(ev: Any) -> None:
-            if not self._attr_is_on:
-                return
-            if self._is_day_mode():
-                return
-            to_state = ev.data.get("new_state")
-            if to_state is None:
-                return
-            try:
-                if to_state.state == STATE_ON:
-                    self._handle_motion_on()
-                else:
-                    self._handle_motion_off()
-            except Exception:
-                _LOGGER.exception(
-                    "[%s] Error in motion handler",
-                    self._instance_name,
-                )
-            # Refresh the "motion now" mirror sensor.
-            self._notify_monitors()
-
-        @callback
-        def _on_light_state_change(ev: Any) -> None:
-            """Event-driven external control detection.
-
-            Triggered when any configured light changes state.
-            Compares actual state to persisted expected state.
-            A detected intervention is written per light into ``held_lights``.
-            During a sleep/wake-up ramp the detection is on/off only: the ramp
-            legitimately moves brightness, but an external OFF ends the whole
-            ramp and jumps into the block (see Phase 7a).
-            """
-            if not self._attr_is_on:
-                return
-
-            entity_id = ev.data.get("entity_id")
-            if entity_id not in self._lights.get_lights_list():
-                return
-
-            # A restored hold whose light had not reported yet is judged the
-            # moment the lamp does — before the startup/grace guards below,
-            # which have nothing to do with that decision.
-            if entity_id in self._pending_hold_checks:
-                self._revalidate_pending_holds([entity_id])
-
-            # Skip if first tick after startup (mode handlers haven't applied yet)
-            if self._first_tick_after_startup:
-                return
-
-            # Skip if grace period active (our command in flight)
-            if self._manual_control_detector.is_in_grace_period(entity_id):
-                return
-
-            # Skip if no expected state (we haven't applied values yet)
-            expected = self._state_ctrl.get_expected_state(entity_id)
-            if expected is None:
-                return
-
-            try:
-                # The same ruler the hold re-validation uses: inside a ramp
-                # only on/off is judged, because brightness and colour are
-                # moving legitimately.
-                policy = self._detection_policy()
-
-                # Run detection on this single light
-                external_lights = self._manual_control_detector.check_external_control(
-                    self.hass,
-                    [entity_id],
-                    self._state_ctrl,
-                    check_brightness=policy.check_brightness,
-                    check_color=policy.check_color,
-                    brightness_tolerance_pct=policy.brightness_tolerance_pct,
-                    kelvin_tolerance=policy.kelvin_tolerance,
-                )
-
-                if not external_lights:
-                    return
-
-                _LOGGER.info(
-                    "[%s] External control detected on %s (event-driven)",
-                    self._instance_name,
-                    entity_id,
-                )
-
-                if self._in_ramp():
-                    # "Ich bin müde, ich will aus": an external OFF ends the
-                    # whole ramp and jumps into the block, exactly like the
-                    # wall-button turn_off with hold.
-                    sleep_handler = self._get_mode_handler(MODE_SLEEP)
-                    wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
-                    if sleep_handler is not None and sleep_handler.is_sleep_active():
-                        sleep_handler.interrupt_into_block()
-                    elif wakeup_handler is not None:
-                        wakeup_handler.interrupt_into_block()
-                    return
-
-                self._state_ctrl.set_hold(external_lights, reason="detected")
-            except Exception:
-                _LOGGER.exception(
-                    "[%s] Error in light state change handler",
-                    self._instance_name,
-                )
-
         if light_sensors:
             self._unsub.append(
-                async_track_state_change_event(hass, light_sensors, _on_tick)
+                async_track_state_change_event(hass, light_sensors, self._on_tick)
             )
             _LOGGER.debug(
                 "[%s] Subscribed to %d illuminance sensors: %s",
@@ -1339,13 +984,12 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 light_sensors,
             )
 
-        self._unsub.append(
-            async_track_time_change(hass, _on_tick, second=0)
-        )
+        self._unsub.append(async_track_time_change(hass, self._on_tick, second=0))
 
+        motion_sensors = self._motion.get_motion_sensor_entities()
         if motion_sensors:
             self._unsub.append(
-                async_track_state_change_event(hass, motion_sensors, _on_motion)
+                async_track_state_change_event(hass, motion_sensors, self._on_motion)
             )
             _LOGGER.debug(
                 "[%s] Subscribed to %d motion sensors: %s",
@@ -1354,11 +998,13 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 motion_sensors,
             )
 
-        # Subscribe to light state changes for event-driven external control detection
+        # Light state changes drive the event-driven external control detection.
         lights = self._lights.get_lights_list()
         if lights:
             self._unsub.append(
-                async_track_state_change_event(hass, lights, _on_light_state_change)
+                async_track_state_change_event(
+                    hass, lights, self._on_light_state_change
+                )
             )
             _LOGGER.debug(
                 "[%s] Subscribed to state changes for %d lights (event-driven detection)",
@@ -1368,42 +1014,77 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
         # Re-discover the area the moment its registries change, so a newly
         # added lamp or sensor is adopted within seconds — no per-minute poll.
-        self._unsub.append(
-            hass.bus.async_listen(
-                EVENT_ENTITY_REGISTRY_UPDATED, self._on_registry_changed
-            )
-        )
-        self._unsub.append(
-            hass.bus.async_listen(
-                EVENT_DEVICE_REGISTRY_UPDATED, self._on_registry_changed
-            )
-        )
-        self._unsub.append(
-            hass.bus.async_listen(
-                EVENT_AREA_REGISTRY_UPDATED, self._on_registry_changed
-            )
-        )
+        for event in (
+            EVENT_ENTITY_REGISTRY_UPDATED,
+            EVENT_DEVICE_REGISTRY_UPDATED,
+            EVENT_AREA_REGISTRY_UPDATED,
+        ):
+            self._unsub.append(hass.bus.async_listen(event, self._on_registry_changed))
 
-        # Record the adopted entity set now, so registry events only trigger a
-        # re-discover when that set actually changes.
-        self._last_registry_snapshot = self._registry_snapshot()
-
-        # Initial apply
+    def _apply_initial_mode(self) -> None:
+        """Apply the current mode once, right after (re)subscribing."""
         mode = self._schedule.get_current_mode()
         self._last_mode = mode
         self._report_mode_change(None, mode)
-        # Mark as first tick after startup - skip external control detection
-        # to allow mode handlers to apply initial values
+        # Skip external control detection until the mode handlers have applied
+        # their initial values.
         self._first_tick_after_startup = True
-        if mode in (MODE_DAY, MODE_SLEEP):
-            _on_tick()
-        elif mode == MODE_WAKEUP:
-            wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
-            if wakeup_handler:
-                wakeup_handler.tick()
-        elif mode == MODE_NIGHT:
-            # For night mode, run tick to apply fallback or handle motion
-            _on_tick()
+        if mode == MODE_WAKEUP:
+            self._handlers.wakeup.tick()
+        else:
+            # Day and sleep apply their values, night applies its fallback or
+            # handles motion.
+            self._on_tick()
+
+    @callback
+    def _on_tick(self, _: Any = None) -> None:
+        """The minute tick, or a LUX reading: apply the current mode."""
+        if not self._attr_is_on:
+            return
+        try:
+            self._handle_tick()
+        except Exception:
+            _LOGGER.exception("[%s] Error in _handle_tick", self._instance_name)
+        # The LUX mirror sensor reads the raw sensor state, so it must
+        # refresh whenever the underlying reading (or the minute tick) runs.
+        self.notify_monitors()
+
+    @callback
+    def _on_motion(self, ev: Any) -> None:
+        """A motion sensor changed; only the night follows motion."""
+        if not self._attr_is_on:
+            return
+        if self._is_day_mode():
+            return
+        to_state = ev.data.get("new_state")
+        if to_state is None:
+            return
+        try:
+            if to_state.state == STATE_ON:
+                self._handle_motion_on()
+            else:
+                self._handle_motion_off()
+        except Exception:
+            _LOGGER.exception("[%s] Error in motion handler", self._instance_name)
+        # Refresh the "motion now" mirror sensor.
+        self.notify_monitors()
+
+    @callback
+    def _on_light_state_change(self, ev: Any) -> None:
+        """A configured light reported a state: judge it for external control."""
+        if not self._attr_is_on:
+            return
+
+        entity_id = ev.data.get("entity_id")
+        if entity_id not in self._lights.get_lights_list():
+            return
+
+        try:
+            self._external_control.handle_state_report(entity_id)
+        except Exception:
+            _LOGGER.exception(
+                "[%s] Error in light state change handler", self._instance_name
+            )
 
     def _stop_listeners(self) -> None:
         """Unsubscribe all and reset transient state."""
@@ -1415,11 +1096,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             self._registry_debounce = None
         self._last_mode = None
         self._last_applied_target = None
-        self._notify_monitors()
+        self.notify_monitors()
 
-        night_handler = self._get_mode_handler(MODE_NIGHT)
-        if night_handler is not None:
-            night_handler.exit("")
+        self._handlers.night.exit("")
 
         if self._illuminance_reader is not None:
             self._illuminance_reader.clear_state()
@@ -1429,8 +1108,29 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
     # ---------------------------------------------------------------
 
     def get_active_mode(self) -> str | None:
-        """Return the mode driving this instance, None while it is off."""
-        return self._last_mode
+        """Return the mode driving this instance, None while it is off.
+
+        A sleep or wake-up started by service drives the lights although the
+        schedule never entered that mode, so it is what the room is in.
+        ``_last_mode`` stays untouched: it is the schedule's side of the
+        transition machinery, and the ramp must not trigger transitions of
+        its own.
+        """
+        if self._last_mode is None:
+            return None
+        return self._service_ramp_mode() or self._last_mode
+
+    def _service_ramp_mode(self) -> str | None:
+        """The service-started ramp moving the lights right now, if any.
+
+        Same order as :meth:`_run_service_mode`, which decides who owns the
+        lights; the dark block after a sleep is not a ramp and is not listed.
+        """
+        if self._handlers.sleep.is_sleep_active():
+            return MODE_SLEEP
+        if self._handlers.wakeup.is_service_triggered_active():
+            return MODE_WAKEUP
+        return None
 
     def get_held_lights(self) -> set[str]:
         """Lights currently held by a service until the phase ends."""
@@ -1450,12 +1150,11 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
 
     def get_mode_progress(self) -> float | None:
         """Return ramp progress in sleep and wake-up, None in other modes."""
-        if self._last_mode not in (MODE_SLEEP, MODE_WAKEUP):
+        mode = self.get_active_mode()
+        if mode not in (MODE_SLEEP, MODE_WAKEUP):
             return None
-        handler = self._get_mode_handler(self._last_mode)
-        if handler is None:
-            return None
-        return handler.get_progress()
+        ramp = self._handlers.sleep if mode == MODE_SLEEP else self._handlers.wakeup
+        return ramp.get_progress()
 
     def get_controlled_lights(self) -> list[str]:
         """Lights this instance currently manages (configured or discovered)."""
@@ -1470,7 +1169,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         cfg = self._config
         if not (cfg.is_area_based() and cfg.area_id):
             return {}
-        discovery = self._get_area_discovery()
+        discovery = self._discovery.scan()
         return {
             "area_name": discovery.get("area_name"),
             "area_id": cfg.area_id,
@@ -1493,13 +1192,26 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         """True while motion is present, as the integration sees it."""
         return self.has_motion_sensor() and self._motion.has_motion_now()
 
+    def read_raw_lux(self) -> float | None:
+        """The raw LUX reading of the light sensor, None when it has none."""
+        return self._illuminance.get_lux_raw()
+
+    def store_lux_calibration(self, lamp_contribution_lux: float) -> None:
+        """Persist the lamp contribution at 100% and apply it to the reader.
+
+        Persisted so it survives a restart, and set on the live reader so it
+        applies without one.
+        """
+        self._state_ctrl.set_lux_calibration(lamp_contribution_lux)
+        self._illuminance.set_lux_calibration(lamp_contribution_lux)
+
     def get_lux_reading(self) -> dict[str, Any]:
         """Raw LUX plus the compensated ambient value, without side effects.
 
-        ``get_lux()`` feeds the rolling-average buffer, so a monitor sensor
-        must not call it — reading from a dashboard would skew the smoothing.
-        This recomputes the ambient value read-only from the raw reading,
-        the calibration and the last applied brightness.
+        Unlike ``get_lux()``, which returns a rolling measurement average,
+        this reports the current raw reading and its compensated value.
+        It does not sample a new measurement into the smoothing buffer.
+        Compensation uses the calibration and last applied brightness.
         """
         raw = self._illuminance.get_lux_raw()
         calibration = self._illuminance.get_lux_calibration()
@@ -1538,7 +1250,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
                 "to_mode": to_mode,
             },
         )
-        self._notify_monitors()
+        self.notify_monitors()
 
     def record_applied_target(self, applied: ExpectedState) -> None:
         """Observe what the light applier just commanded.
@@ -1547,9 +1259,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         can show the last target without reaching into the handlers.
         """
         self._last_applied_target = applied
-        self._notify_monitors()
+        self.notify_monitors()
 
-    def _notify_monitors(self) -> None:
+    def notify_monitors(self) -> None:
         """Tell this instance's sensors to re-read."""
         async_dispatcher_send(
             self.hass,
@@ -1581,11 +1293,11 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         mode = self._schedule.get_current_mode()
 
         if mode == MODE_NIGHT:
-            dial = self._night_brightness_dial()
+            dial = self._dials.night()
             if dial is None:
                 return "no night brightness dial, ignored"
             self._state_ctrl.clear_holds()
-            self._notify_monitors()
+            self.notify_monitors()
             dial.set_dialled_in(dial.native_value + step)
             return f"night brightness now {dial.native_value}%"
 
@@ -1601,14 +1313,16 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         fallback = self._config.day_mode.fallback
         if fallback == DAY_FALLBACK_FIXED:
             self._state_ctrl.clear_holds()
-            self._notify_monitors()
+            self.notify_monitors()
             return self._step_day_brightness(step)
 
         if fallback == DAY_FALLBACK_SKIP:
             # Day mode leaves the brightness alone here, so the step stands.
             self._state_ctrl.clear_holds()
-            self._notify_monitors()
-            self._step_brightness_directly(step)
+            self.notify_monitors()
+            self._shared_deps.light_applier.step_brightness(
+                self._lights.get_lights_list(), step, floor=MIN_DIAL_BRIGHTNESS_PCT
+            )
             return f"day fallback={fallback} sets no brightness, stepped the lights"
 
         if fallback == DAY_FALLBACK_CIRCADIAN_ONLY:
@@ -1623,60 +1337,11 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         simply shifts the target; the day handler reads the dialled-in value
         and re-applies it.
         """
-        dial = self._day_brightness_dial()
+        dial = self._dials.day()
         if dial is None:
             return "no day brightness dial, ignored"
         dial.set_dialled_in(dial.native_value + step)
         return f"day brightness now {dial.native_value}%"
-
-    def _step_brightness_directly(self, step: int) -> None:
-        """Move each light by *step* percent, never below the dial floor.
-
-        Home Assistant's own ``brightness_step_pct`` walks a light down past
-        zero, which a wall button must not be able to do.
-
-        Goes through the applier rather than calling ``light.turn_on``: that
-        records the values as ours, so the step we just made is not read back
-        as somebody else having been at the lights.
-        """
-        lights = self._lights.get_lights_list()
-        if not lights:
-            return
-        applier = self._light_applier()
-        for light in lights:
-            current = self._light_brightness_pct(light)
-            if current is None:
-                if step <= 0:
-                    continue  # an off light stays off
-                current = 0
-            target = max(MIN_DIAL_BRIGHTNESS_PCT, min(100, current + step))
-            applier.turn_on(
-                [light],
-                {"entity_id": light, ATTR_BRIGHTNESS_PCT: target},
-                transition="tick",
-                brightness_pct=target,
-            )
-
-    def _light_applier(self) -> LightApplier:
-        """Applier for the few light changes the switch makes itself."""
-        return LightApplier(
-            self.hass,
-            self._state_ctrl,
-            self._get_transition,
-            self._instance_name,
-            on_applied=self.record_applied_target,
-            mark_applied=self._manual_control_detector.mark_applied,
-        )
-
-    def _light_brightness_pct(self, light: str) -> int | None:
-        """Brightness of *light* in percent, None if it is off or unknown."""
-        state = self.hass.states.get(light)
-        if state is None or state.state != STATE_ON:
-            return None
-        raw = state.attributes.get("brightness")
-        if raw is None:
-            return None
-        return max(1, round(int(raw) / 255 * 100))
 
     def reapply_current_mode(self) -> None:
         """Apply the current mode now, without waiting for the next tick.
@@ -1697,9 +1362,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         mode re-applies exactly what the next tick would.
         """
         if self._schedule.get_current_mode() == MODE_NIGHT:
-            handler = self._get_mode_handler(MODE_NIGHT)
-            if handler is not None:
-                handler.reapply_brightness_to_on_lights()
+            self._handlers.night.reapply_brightness_to_on_lights()
             return
         self.reapply_current_mode()
 
@@ -1713,19 +1376,15 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         (``day_min_brightness`` 0 and LUX at/above ``lux_off``).
         """
         result: dict[str, Any] = {}
-        day_handler = self._get_mode_handler(MODE_DAY)
-        night_handler = self._get_mode_handler(MODE_NIGHT)
 
         if self._is_control_brightness_on():
             if self._is_day_mode():
-                if day_handler:
-                    pct = day_handler.get_brightness_pct()
-                    if pct is None and force_on:
-                        pct = day_handler.max_brightness()
-                    result["brightness_pct"] = pct if pct is not None else 0
+                pct = self._handlers.day.get_brightness_pct()
+                if pct is None and force_on:
+                    pct = self._handlers.day.max_brightness()
+                result["brightness_pct"] = pct if pct is not None else 0
             else:
-                if night_handler:
-                    result["brightness_pct"] = night_handler.get_brightness_pct()
+                result["brightness_pct"] = self._handlers.night.get_brightness_pct()
 
         if self._is_control_color_on() and self._circadian.is_enabled():
             kelvin = self._circadian.get_expected_night_kelvin()
@@ -1751,11 +1410,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             # The visitor wants them on until the phase ends, whatever the
             # day/night automation would do. A held light is not even in the
             # off timer's list, so it is protected without ``keep_on``.
-            self._state_ctrl.set_hold(lights, reason="service")
-            night_handler = self._get_mode_handler(MODE_NIGHT)
-            if night_handler is not None:
-                night_handler._cancel_off_timer()
-        self._notify_monitors()
+            self._state_ctrl.set_hold(lights, reason=HOLD_REASON_SERVICE)
+            self._handlers.night.cancel_off_timer()
+        self.notify_monitors()
 
     def prepare_lights_applied_by_service(
         self,
@@ -1795,9 +1452,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         if hold:
             # The visitor wants them off until the phase ends, whatever the
             # day/night automation would do.
-            self._state_ctrl.set_hold(lights, reason="service")
+            self._state_ctrl.set_hold(lights, reason=HOLD_REASON_SERVICE)
             self._interrupt_ramps()
-        self._notify_monitors()
+        self.notify_monitors()
 
     def _interrupt_ramps(self) -> None:
         """End a running sleep/wake-up ramp when a visitor turns the room off.
@@ -1806,13 +1463,11 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         app's OFF: the whole ramp stops and the room jumps into the dark
         block. Without the hold (a system automation) the ramp keeps running.
         """
-        sleep_handler = self._get_mode_handler(MODE_SLEEP)
-        if sleep_handler and sleep_handler.is_sleep_active():
-            sleep_handler.interrupt_into_block()
+        if self._handlers.sleep.is_sleep_active():
+            self._handlers.sleep.interrupt_into_block()
 
-        wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
-        if wakeup_handler and wakeup_handler.is_active():
-            wakeup_handler.interrupt_into_block()
+        if self._handlers.wakeup.is_active():
+            self._handlers.wakeup.interrupt_into_block()
 
     def hold_all_lights(self) -> None:
         """Hold every light of the instance until the phase ends.
@@ -1822,8 +1477,8 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         """
         lights = self._lights.get_lights_list()
         if lights:
-            self._state_ctrl.set_hold(lights, reason="service")
-        self._notify_monitors()
+            self._state_ctrl.set_hold(lights, reason=HOLD_REASON_SERVICE)
+        self.notify_monitors()
 
     def release_hold(self) -> None:
         """Drop the holds and put the lights into the state a release promises.
@@ -1837,22 +1492,32 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         where the room is dark and nobody moves. So the release always takes
         exactly one branch of :meth:`_reapply_after_release` and reports it,
         and every light it freed without commanding stays with a truthful
-        expectation (see :meth:`_ensure_truthful_expectations`).
+        expectation (see :class:`ExpectationAdopter`).
         """
         # Collected before clearing: once the holds are gone the set is lost,
         # and both reasons — a visitor's command and a detected intervention —
         # must leave a defined state behind.
         released = sorted(self._state_ctrl.get_held_lights_with_reasons())
-        self._state_ctrl.clear_holds()
-        self._reset_night_brightness_dial(apply=False)
-        self._reset_day_brightness_dial(apply=False)
+        self._resolve_holds(released, reset_dials=True)
+
+    def _release_expired_holds(self) -> None:
+        """Resolve elapsed holds through the same path as an explicit release."""
+        expired = self._state_ctrl.expired_holds(self._config.hold_timeout_min)
+        if expired:
+            self._resolve_holds(expired, reset_dials=False)
+
+    def _resolve_holds(self, released: list[str], *, reset_dials: bool) -> None:
+        """Release selected lights, reapply the phase and adopt expectations."""
+        self._state_ctrl.release_hold(released)
+        if reset_dials:
+            self._dials.reset_all(apply=False)
         # Somebody else owned the lights while held, so what we remember
         # having commanded is stale; without this the damping would compare
         # the new target against a fiction and skip.
         self._forget_applied_values()
 
         branch, commanded = self._reapply_after_release(released)
-        adopted = self._ensure_truthful_expectations(released, commanded)
+        adopted = self._expectation_adopter.adopt(released, commanded)
 
         _LOGGER.info(
             "[%s] hold released: %d light(s), branch=%s, commanded=%d, adopted=%d",
@@ -1862,7 +1527,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             len(commanded),
             len(adopted),
         )
-        self._notify_monitors()
+        self.notify_monitors()
 
     def _reapply_after_release(self, released: list[str]) -> tuple[str, list[str]]:
         """Restore the phase after a release: one branch, and what it commanded.
@@ -1873,15 +1538,10 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         ``service-ramp``
             A service-started sleep or wake-up owns the values; its ramp keeps
             running and is not disturbed.
-        ``night-motion``
-            Motion-lit night with motion now: the released lights are handed
-            back to us and re-applied to the night target.
-        ``night-off``
-            Motion-lit night without motion — the normal case after the
-            television goes off: the off timer's selection is switched off.
-        ``night-adopt``
-            ... and it selected nothing, so nothing is commanded and the
-            current state is adopted.
+        ``night-motion`` / ``night-off`` / ``night-adopt``
+            A motion-lit night: the night handler decides between re-applying
+            the night target, switching off what the off timer would switch
+            off, and commanding nothing (see ``NightModeHandler.handle_release``).
         ``mode-apply``
             Day, or night without a motion sensor: whatever the next tick
             would apply.
@@ -1890,100 +1550,22 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         state for it: that write is what detection compares against, so it is
         the honest answer to "did we still command this light?".
         """
-        stamps = {lid: self._expected_stamp(lid) for lid in released}
+        stamps = {lid: self._state_ctrl.get_expected_timestamp(lid) for lid in released}
 
         if self._run_service_mode():
             branch = "service-ramp"
-        elif (
-            self._schedule.get_current_mode() == MODE_NIGHT
-            and self.has_motion_sensor()
-        ):
-            night_handler = self._get_mode_handler(MODE_NIGHT)
-            if night_handler is None:
-                branch = "night-adopt"
-            elif self._motion.has_motion_now():
-                # Hand the released lights back to us *before* applying. A
-                # light we do not control makes the motion apply abort the
-                # whole room as "somebody else owns this" and command nothing,
-                # which leaves the old expectation in place — the scene's
-                # values then read as a fresh intervention minutes later.
-                self._state_ctrl.mark_controlled(released)
-                night_handler.reapply_after_release()
-                branch = "night-motion"
-            else:
-                lights_to_off, _ = night_handler._off_timer_result()
-                if lights_to_off:
-                    night_handler._turn_off_lights(lights_to_off)
-                    branch = "night-off"
-                else:
-                    branch = "night-adopt"
+        elif self._is_motion_lit(self._schedule.get_current_mode()):
+            branch = self._handlers.night.handle_release(released)
         else:
             self._apply_mode_now(self._schedule.get_current_mode())
             branch = "mode-apply"
 
         commanded = [
-            lid for lid in released if self._expected_stamp(lid) != stamps[lid]
+            lid
+            for lid in released
+            if self._state_ctrl.get_expected_timestamp(lid) != stamps[lid]
         ]
         return branch, commanded
-
-    def _ensure_truthful_expectations(
-        self, released: list[str], commanded: list[str]
-    ) -> list[str]:
-        """Record what an uncommanded released light actually shows.
-
-        A release can end without commanding every light it freed (a service
-        ramp owns them, or the off timer selected nothing). The expectation
-        recorded before the hold then still describes the scene's values, and
-        the next state report reads as a fresh intervention — the hold is back
-        within minutes, locking the integration out of the room it just
-        reclaimed. So the expectation is brought up to date with reality.
-
-        Adoption is the honest statement "this is how the light looks and we
-        did not command it": it claims no ownership, touches no light list and
-        creates no hold. It only keeps the expectation from being older than
-        the release.
-        """
-        commanded_set = set(commanded)
-        adopted: list[str] = []
-        for lid in released:
-            if lid in commanded_set:
-                continue
-            state = self.hass.states.get(lid)
-            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                # Nothing truthful to record; the next real report is judged
-                # against whatever is there, which is the lesser evil.
-                continue
-            on = state.state == STATE_ON
-            attrs = getattr(state, "attributes", {}) or {}
-            brightness = brightness_to_pct(attrs.get("brightness")) if on else None
-            self._state_ctrl.set_expected_state(
-                lid,
-                on=on,
-                brightness_pct=brightness,
-                kelvin=self._reported_kelvin(attrs) if on else None,
-            )
-            # Our own adoption must never read as a change we did not make.
-            self._manual_control_detector.mark_applied([lid])
-            _LOGGER.debug(
-                "[%s] %s: adopted current state after release (nothing was commanded)",
-                self._instance_name,
-                lid,
-            )
-            adopted.append(lid)
-        return adopted
-
-    def _expected_stamp(self, light_id: str) -> float | None:
-        """When the expectation for *light_id* was recorded, None if never."""
-        expected = self._state_ctrl.get_expected_state(light_id)
-        return expected.get("timestamp") if expected is not None else None
-
-    @staticmethod
-    def _reported_kelvin(attrs: dict) -> int | None:
-        """The colour temperature a light reports, None when it reports none."""
-        kelvin = attrs.get("color_temp_kelvin")
-        if kelvin is not None:
-            return int(kelvin)
-        return mired_to_kelvin(attrs.get("color_temp"))
 
     def has_dialled_brightness(self) -> bool:
         """True when the current mode's brightness dial is dialled in.
@@ -1994,9 +1576,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         """
         mode = self._schedule.get_current_mode()
         if mode == MODE_NIGHT:
-            return self._get_night_brightness() is not None
+            return self._dials.dialled_in_night() is not None
         if mode == MODE_DAY:
-            return self._get_day_brightness() is not None
+            return self._dials.dialled_in_day() is not None
         return False
 
     def reset_brightness(self) -> None:
@@ -2009,13 +1591,9 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         in a motion-lit night that re-dims the lights already on, rather than
         running the motion handler and re-holding them as a "divergence".
         """
-        mode = self._schedule.get_current_mode()
-        if mode == MODE_NIGHT:
-            self._reset_night_brightness_dial(apply=False)
-        elif mode == MODE_DAY:
-            self._reset_day_brightness_dial(apply=False)
+        self._dials.reset_for_mode(self._schedule.get_current_mode(), apply=False)
         self.reapply_dialled_brightness()
-        self._notify_monitors()
+        self.notify_monitors()
 
     def start_sleep_mode_now(
         self,
@@ -2030,18 +1608,19 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             brightness_pct: Optional override for target brightness
             color_temp_kelvin: Optional override for target kelvin
         """
-        sleep_handler = self._get_mode_handler(MODE_SLEEP)
-        if sleep_handler is not None:
-            # If any runtime overrides provided, use start_with_overrides
-            if duration_min is not None or brightness_pct is not None or color_temp_kelvin is not None:
-                sleep_handler.start_with_overrides(
-                    duration_min=duration_min,
-                    brightness_pct=brightness_pct,
-                    color_temp_kelvin=color_temp_kelvin,
-                )
-            else:
-                sleep_handler.enter(None)
-                sleep_handler.tick()
+        self._clear_holds_entering(MODE_SLEEP)
+        sleep_handler = self._handlers.sleep
+        # If any runtime overrides provided, use start_with_overrides
+        if duration_min is not None or brightness_pct is not None or color_temp_kelvin is not None:
+            sleep_handler.start_with_overrides(
+                duration_min=duration_min,
+                brightness_pct=brightness_pct,
+                color_temp_kelvin=color_temp_kelvin,
+            )
+        else:
+            sleep_handler.enter(None)
+            sleep_handler.tick()
+        self.notify_monitors()
 
     def start_wakeup_mode_now(
         self,
@@ -2058,47 +1637,45 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             end_brightness_pct: Optional override for end brightness
             color_temp_kelvin: Optional override for end kelvin
         """
+        self._clear_holds_entering(MODE_WAKEUP)
         # Clear any active sleep block when starting wake-up
-        sleep_handler = self._get_mode_handler(MODE_SLEEP)
-        if sleep_handler and sleep_handler.is_block_active():
+        sleep_handler = self._handlers.sleep
+        if sleep_handler.is_block_active():
             _LOGGER.info(
                 "[%s] Wake-up Mode: Clearing active sleep block",
                 self._instance_name,
             )
             sleep_handler.clear_block()
 
-        wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
-        if wakeup_handler is not None:
-            wakeup_handler.start_service_triggered(
-                duration_min=duration_min if duration_min is not None else int(
-                    self._options.get(CONF_WAKEUP_DURATION_MIN, DEFAULT_WAKEUP_DURATION_MIN)
-                ),
-                start_brightness_pct=start_brightness_pct,
-                end_brightness_pct=end_brightness_pct,
-                color_temp_kelvin=color_temp_kelvin,
-            )
+        self._handlers.wakeup.start_service_triggered(
+            duration_min=duration_min if duration_min is not None else int(
+                self._options.get(CONF_WAKEUP_DURATION_MIN, DEFAULT_WAKEUP_DURATION_MIN)
+            ),
+            start_brightness_pct=start_brightness_pct,
+            end_brightness_pct=end_brightness_pct,
+            color_temp_kelvin=color_temp_kelvin,
+        )
+        self.notify_monitors()
 
     def stop_sleep_mode_now(self) -> None:
         """Immediately stop Sleep Mode and return to normal day/night mode."""
-        sleep_handler = self._get_mode_handler(MODE_SLEEP)
-        if sleep_handler is not None:
-            # Exit sleep mode, returning to normal schedule
-            sleep_handler.exit("")
-            _LOGGER.info(
-                "[%s] Sleep Mode stopped via service",
-                self._instance_name,
-            )
+        # Exit sleep mode, returning to normal schedule
+        self._handlers.sleep.exit("")
+        _LOGGER.info(
+            "[%s] Sleep Mode stopped via service",
+            self._instance_name,
+        )
+        self.notify_monitors()
 
     def stop_wakeup_mode_now(self) -> None:
         """Immediately stop Wake-up Mode and return to normal day/night mode."""
-        wakeup_handler = self._get_mode_handler(MODE_WAKEUP)
-        if wakeup_handler is not None:
-            # Exit wake-up mode, returning to normal schedule
-            wakeup_handler.exit("")
-            _LOGGER.info(
-                "[%s] Wake-up Mode stopped via service",
-                self._instance_name,
-            )
+        # Exit wake-up mode, returning to normal schedule
+        self._handlers.wakeup.exit("")
+        _LOGGER.info(
+            "[%s] Wake-up Mode stopped via service",
+            self._instance_name,
+        )
+        self.notify_monitors()
 
     # ---------------------------------------------------------------
     #  Switch lifecycle
@@ -2112,7 +1689,8 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         self._state_ctrl.prune(self._lights.get_lights_list())
         # A hold restored from storage predates this start; drop it if the
         # light no longer shows the intervention it was recorded for.
-        self._revalidate_restored_holds()
+        self._release_expired_holds()
+        self._restored_holds.revalidate_restored()
         # Taking over: the lights' current state predates our control, so the
         # moment we start listening it must not be read as an external change.
         self._manual_control_detector.mark_applied(self._lights.get_lights_list())
@@ -2148,8 +1726,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         # A new configured night brightness is a deliberate new baseline, so
         # it wins over an ad-hoc dial. No apply needed, this method re-applies
         # everything below anyway.
-        self._reset_night_brightness_dial(apply=False)
-        self._reset_day_brightness_dial(apply=False)
+        self._dials.reset_all(apply=False)
 
         # Save current mode before invalidating caches
         # (schedule/mode may change after new options are loaded)
@@ -2191,7 +1768,8 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
             self._state_ctrl.prune(self._lights.get_lights_list())
             # A hold restored from storage predates this start; drop it if the
             # light no longer shows the intervention it was recorded for.
-            self._revalidate_restored_holds()
+            self._release_expired_holds()
+            self._restored_holds.revalidate_restored()
             # At HA startup the just-restored lights report their state
             # asynchronously, and colour bulbs briefly show an RGB/HS/XY colour
             # before the persisted colour temperature lands (the first tick

@@ -125,6 +125,8 @@
             "name": "Manual Devices & Sensors",
             "description": "Additional lights and sensors beyond those discovered from the area. Leave empty to use only auto-discovered entities.",
             "data": {
+              "detected_hold_survives_phase": "Detected holds survive phase changes",
+              "hold_timeout_min": "Hold timeout (minutes, 0 = never)",
               "lights": "Additional lights (optional)",
               "light_sensor": "Additional light sensor (optional)",
               "motion_sensor": "Additional motion sensor (optional)"

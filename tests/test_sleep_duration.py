@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 
-from custom_components.daynight_lighting.schedule import DayNightSchedule
+from custom_components.daynight_lighting.mode_schedule import DayNightSchedule
 from custom_components.daynight_lighting.config import DayNightConfig
 from custom_components.daynight_lighting.const import (
     CONF_NIGHT_MODE_START,
@@ -125,7 +125,7 @@ class TestSleepModeWithExplicitDuration:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 21:30 - in sleep window (21:00 → 22:00)
             mock_dt.now.return_value = datetime(2026, 6, 15, 21, 30, 0)
             assert sched.get_current_mode() == MODE_SLEEP
@@ -142,7 +142,7 @@ class TestSleepModeWithExplicitDuration:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 22:30 - after sleep (22:00), before night (23:00) → day mode
             mock_dt.now.return_value = datetime(2026, 6, 15, 22, 30, 0)
             assert sched.get_current_mode() == MODE_DAY
@@ -159,7 +159,7 @@ class TestSleepModeWithExplicitDuration:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 23:30 - in sleep window (23:00 → 01:00)
             mock_dt.now.return_value = datetime(2026, 6, 15, 23, 30, 0)
             assert sched.get_current_mode() == MODE_SLEEP
@@ -180,7 +180,7 @@ class TestSleepModeWithExplicitDuration:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 21:20 - in sleep window (21:15 → 22:15)
             mock_dt.now.return_value = datetime(2026, 6, 15, 21, 20, 0)
             assert sched.get_current_mode() == MODE_SLEEP
@@ -215,7 +215,7 @@ class TestBackwardCompatibility:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 21:30 - within 60 min emergency window (21:00 → 22:00)
             mock_dt.now.return_value = datetime(2026, 6, 15, 21, 30, 0)
             assert sched.get_current_mode() == MODE_SLEEP

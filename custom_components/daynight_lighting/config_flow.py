@@ -35,6 +35,10 @@ except ImportError:
     _HAS_SECTIONS = False
 
 from .const import (
+    CONF_DETECTED_HOLD_SURVIVES_PHASE,
+    DEFAULT_DETECTED_HOLD_SURVIVES_PHASE,
+    CONF_HOLD_TIMEOUT_MIN,
+    DEFAULT_HOLD_TIMEOUT_MIN,
     CONF_AREA_ID,
     CONF_BRIGHTNESS_CHANGE_THRESHOLD_PCT,
     CONF_CIRCADIAN_ENABLED,
@@ -353,6 +357,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         # or remove previously configured ones
         devices_schema = vol.Schema(
             {
+                vol.Optional(
+                    CONF_DETECTED_HOLD_SURVIVES_PHASE,
+                    default=_f(
+                        CONF_DETECTED_HOLD_SURVIVES_PHASE,
+                        DEFAULT_DETECTED_HOLD_SURVIVES_PHASE,
+                    ),
+                ): bool,
+                vol.Optional(
+                    CONF_HOLD_TIMEOUT_MIN,
+                    default=_f(CONF_HOLD_TIMEOUT_MIN, DEFAULT_HOLD_TIMEOUT_MIN),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0)),
                 vol.Optional(
                     CONF_LIGHTS,
                     default=_f(CONF_LIGHTS, []),

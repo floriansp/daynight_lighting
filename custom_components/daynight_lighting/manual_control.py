@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 
+from .const import MODE_DAY, MODE_SLEEP, MODE_WAKEUP
 from .domain.brightness import brightness_to_pct
 from .domain.colorimetry import (
     COLOR_DISTANCE_THRESHOLD_UV,
@@ -61,6 +62,14 @@ def mired_to_kelvin(mired: int | None) -> int | None:
     if mired_int == 0:
         return None
     return round(1_000_000 / mired_int)
+
+
+def reported_kelvin(attrs: dict) -> int | None:
+    """The colour temperature a light reports, None when it reports none."""
+    kelvin = attrs.get("color_temp_kelvin")
+    if kelvin is not None:
+        return int(kelvin)
+    return mired_to_kelvin(attrs.get("color_temp"))
 
 
 def _has_color_mode(attrs: dict) -> bool:
@@ -226,12 +235,12 @@ class ManualControlDetector:
         Returns:
             Tuple of (brightness_tolerance_pct, kelvin_tolerance)
         """
-        if mode == "day":
+        if mode == MODE_DAY:
             if has_lux_sensor:
                 return (DAY_WITH_SENSOR_BRIGHTNESS_TOLERANCE, DAY_WITH_SENSOR_KELVIN_TOLERANCE)
             return (DAY_NO_SENSOR_BRIGHTNESS_TOLERANCE, DAY_NO_SENSOR_KELVIN_TOLERANCE)
 
-        if mode in ("sleep", "wakeup"):
+        if mode in (MODE_SLEEP, MODE_WAKEUP):
             return (SLEEP_WAKE_BRIGHTNESS_TOLERANCE, SLEEP_WAKE_KELVIN_TOLERANCE)
 
         # Night mode default

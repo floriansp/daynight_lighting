@@ -36,12 +36,13 @@ flowchart TD
 ## What the tick does
 
 The tick runs once a minute and whenever a light or the LUX sensor changes.
-The service-started states outrank the schedule first, then the mode is
-determined and its values are applied.
+Expired holds are released first. The service-started states then outrank the
+schedule, before the mode is determined and its values are applied.
 
 ```mermaid
 flowchart TD
-    tick([Tick]) --> p1{"1 · Sleep dimming<br/>active?"}
+    tick([Tick]) --> p0["0 · Release holds whose timeout elapsed<br/>(only if hold_timeout_min > 0)"]
+    p0 --> p1{"1 · Sleep dimming<br/>active?"}
     p1 -- yes --> s1([Sleep tick, nothing else])
     p1 -- no --> p2{"2 · Sleep block active?"}
     p2 -- yes --> p2b{"Day started, or<br/>motion at night?"}
@@ -49,11 +50,14 @@ flowchart TD
     p2b -- no --> s2b([Stop here])
     p2 -- no --> p3{"3 · Wake-up started<br/>by service?"}
     p3 -- yes --> s3([Wake-up tick, nothing else])
-    p3 -- no --> p4["4 · Determine the mode, and on a change<br/>run the transition: exit, enter,<br/>reset the brightness dials, clear the service holds"]
+    p3 -- no --> p4["4 · Determine the mode, and on a change<br/>run the transition: exit, enter,<br/>reset the brightness dials, clear the service holds<br/>(and detected ones if they do not survive the phase)"]
     p4 --> p5{"Night with a motion sensor?"}
     p5 -- yes --> s5([Act only while motion is present])
     p5 -- no --> s6([Apply the mode's values])
 ```
+
+Starting sleep or wake-up ends every hold, regardless of the phase-survival
+option.
 
 External control is no longer checked on the tick. Detection is event-driven:
 a light that reports values we did not command is held the moment it reports
@@ -79,10 +83,13 @@ reasons, both visible on the `on_hold` binary sensor:
   `hold: true`, or `hold_all`.
 
 A hold never cancels a mode or a ramp. A sleep or wake-up ramp keeps running
-for the non-held lights; it simply skips the held ones. Entering a new mode
-clears every service hold, so a visitor's choice lives only within the phase it
-was made in; a detected hold survives the mode change and ends only when the
-light stops showing the intervention.
+for the non-held lights; it simply skips holds set during the ramp. Starting
+sleep or wake-up ends every existing hold. Entering any new mode clears every
+service hold. By default a detected hold survives a plain mode change; it ends
+there too if *Detected holds survive phase changes* is off. Either kind also
+ends on `release_hold` or when its configured timeout elapses
+(`hold_timeout_min` > 0). See [The life of a hold](#the-life-of-a-hold) for
+refresh and startup details.
 
 The **safety room** (the *Block wall buttons* switch, only meaningful in a
 motion-lit room at night) is the one exception: while it is on, the
@@ -156,33 +163,51 @@ flowchart TD
     service --> life
     life --> end{How does it end?}
     end -- "release_hold (service, button)" --> release
-    end -- "the next mode transition<br/>(service only)" --> release
-    end -- "a restart, when the light<br/>no longer differs" --> release
-    release["Release: clear the holds,<br/>reset the dials, forget the applied values,<br/>restore what the next tick would do<br/>(one branch, always logged)"]
+    end -- "the next mode transition<br/>(service; detected only if it<br/>does not survive the phase)" --> release
+    end -- "hold timeout elapsed<br/>(only if hold_timeout_min > 0,<br/>service and detected)" --> release
+    end -- "start of sleep or wake-up<br/>(every hold)" --> release
+    end -- "a restart, when the light<br/>no longer differs (detected only)" --> release
+    release["Release: clear the holds,<br/>reset the dials (button/service only),<br/>forget the applied values,<br/>restore what the next tick would do<br/>(one branch, always logged)"]
 ```
 
 Three things about this are deliberate.
 
-A **detected** hold has no timeout and no stability take-over. It ends when you
-release it, and it outlives a mode change, because a scene somebody froze is
-theirs until the light stops showing it. For the same reason a restart does not
-simply keep it: on every start the restored hold is checked against the light's
-current state and dropped unless the light still differs from the state we
+With default settings a **detected** hold has no timeout and survives a plain
+mode change. There is no stability take-over. It ends on `release_hold`, at the
+start of sleep or wake-up, or at a mode change if
+`detected_hold_survives_phase` is off. A restart does not simply keep it: on
+every start the restored hold is checked against the light's current state
+and dropped unless the light still differs from the state we
 expected (or is off while it should be on). A hold whose intervention is gone
 must not keep us off that light forever. A lamp that has not reported yet is
 judged the moment it does, against the expected state as it was at startup —
 the startup tick would have overwritten that record by then.
 
 A **service** hold is the deliberate, bounded version of "hands off": it ends
-when your automation says so (`release_hold`) or on the next mode transition.
+when your automation says so (`release_hold`), on the next mode transition,
+or when the configured hold timeout elapses.
 That is the replacement for the old "manual control" switch — `hold_all`
 holds every light of the instance at once. Because it records an explicit
-intent, a restart always keeps it.
+intent, a restart keeps it unless its timeout elapsed meanwhile.
+
+**Hold timeout** (`hold_timeout_min`, default `0` = never) applies to both
+kinds. With a value > 0, every hold expires that many minutes after its last
+set/refresh. A new detected change or another `hold: true` call on the same
+light restarts the time limit. It is checked once a minute, even during ramps,
+so expiry can be up to one minute late. It counts wall-clock time, including
+downtime: a hold whose timeout elapsed while HA was down is released at load.
+A legacy hold without a timestamp starts its timeout at load. `release_hold`
+always works, independently of both hold options.
 
 "Apply the mode now" means exactly what the next tick would apply. Inside a
 sleep or wake-up ramp that is the ramp, and in the dark block after a sleep
 it is nothing at all. A release never flashes day or night values into a
 ramp for a minute.
+
+An expired hold follows the same branch table and adoption rules as the
+button/service, with the same log line, but without resetting the brightness
+dials. An expired off-hold can therefore switch the light back on in low LUX
+by day or with motion at night; this is intended.
 
 Which branch a release takes is decided by the moment, never by whether
 anything *should* happen — night without motion is the normal case after the

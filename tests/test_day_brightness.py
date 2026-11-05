@@ -218,12 +218,12 @@ class TestResetOnEnteringTheDay:
     def test_switch_reads_the_dial(self, make_switch, fake_hass):
         switch, dial = _day_instance(make_switch, fake_hass)
 
-        assert switch._get_day_brightness() is None
+        assert switch._dials.dialled_in_day() is None
         dial.set_dialled_in(40)
-        assert switch._get_day_brightness() == 40
+        assert switch._dials.dialled_in_day() == 40
 
     def test_works_without_the_dial(self, make_switch, fake_hass):
         switch, _ = _day_instance(make_switch, fake_hass)
         del fake_hass.data[DOMAIN][switch._config_entry.entry_id]["day_brightness_number"]
-        assert switch._get_day_brightness() is None
-        switch._reset_day_brightness_dial()
+        assert switch._dials.dialled_in_day() is None
+        switch._dials.reset_all()

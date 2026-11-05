@@ -3,16 +3,27 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 from custom_components.daynight_lighting.area_discovery import (
     _is_group_light,
     _is_motion_sensor_by_entity_id,
+    get_area_name,
     get_lights_in_area,
     get_motion_sensors_in_area,
     get_illuminance_sensors_in_area,
     is_area_based,
 )
 from custom_components.daynight_lighting.config import DayNightConfig
+
+
+def _entry(**kwargs):
+    """Registry entry with explicit HA defaults, never truthy mock fields."""
+    defaults = dict(device_class=None, original_device_class=None,
+                    disabled_by=None, translation_key=None, platform="test",
+                    area_id=None, device_id=None)
+    return SimpleNamespace(**(defaults | kwargs))
 
 
 class TestIsAreaBased:
@@ -225,19 +236,19 @@ class TestGetMotionSensorsInArea:
         # Mock entity registry
         entity_reg = MagicMock()
         entity_reg.entities = {
-            "binary_sensor.motion1": MagicMock(
+            "binary_sensor.motion1": _entry(
                 entity_id="binary_sensor.motion1",
                 area_id="kitchen",
                 device_id=None,
                 original_device_class="motion",
             ),
-            "binary_sensor.presence1": MagicMock(
+            "binary_sensor.presence1": _entry(
                 entity_id="binary_sensor.presence1",
                 area_id="kitchen",
                 device_id=None,
                 original_device_class="presence",
             ),
-            "binary_sensor.door": MagicMock(
+            "binary_sensor.door": _entry(
                 entity_id="binary_sensor.door",
                 area_id="kitchen",
                 device_id=None,
@@ -268,13 +279,13 @@ class TestGetMotionSensorsInArea:
         # Mock entity registry - no device_class but has motion in name
         entity_reg = MagicMock()
         entity_reg.entities = {
-            "binary_sensor.hall_motion": MagicMock(
+            "binary_sensor.hall_motion": _entry(
                 entity_id="binary_sensor.hall_motion",
                 area_id="hallway",
                 device_id=None,
                 original_device_class=None,
             ),
-            "binary_sensor.hall_light": MagicMock(
+            "binary_sensor.hall_light": _entry(
                 entity_id="binary_sensor.hall_light",
                 area_id="hallway",
                 device_id=None,
@@ -304,7 +315,7 @@ class TestGetMotionSensorsInArea:
         # Same sensor matched by device_class and entity_id
         entity_reg = MagicMock()
         entity_reg.entities = {
-            "binary_sensor.kitchen_motion": MagicMock(
+            "binary_sensor.kitchen_motion": _entry(
                 entity_id="binary_sensor.kitchen_motion",
                 area_id="kitchen",
                 device_id=None,
@@ -336,13 +347,13 @@ class TestGetMotionSensorsInArea:
 
         entity_reg = MagicMock()
         entity_reg.entities = {
-            "binary_sensor.real_motion": MagicMock(
+            "binary_sensor.real_motion": _entry(
                 entity_id="binary_sensor.real_motion",
                 area_id="kitchen",
                 device_id=None,
                 original_device_class="motion",
             ),
-            "binary_sensor.kitchen_daynight_lighting_motion": MagicMock(
+            "binary_sensor.kitchen_daynight_lighting_motion": _entry(
                 entity_id="binary_sensor.kitchen_daynight_lighting_motion",
                 area_id="kitchen",
                 device_id=None,
@@ -379,13 +390,13 @@ class TestGetIlluminanceSensorsInArea:
 
         entity_reg = MagicMock()
         entity_reg.entities = {
-            "sensor.lux1": MagicMock(
+            "sensor.lux1": _entry(
                 entity_id="sensor.lux1",
                 area_id="kitchen",
                 device_id=None,
                 original_device_class="illuminance",
             ),
-            "sensor.temp": MagicMock(
+            "sensor.temp": _entry(
                 entity_id="sensor.temp",
                 area_id="kitchen",
                 device_id=None,
@@ -414,19 +425,19 @@ class TestGetIlluminanceSensorsInArea:
 
         entity_reg = MagicMock()
         entity_reg.entities = {
-            "sensor.kitchen_lux": MagicMock(
+            "sensor.kitchen_lux": _entry(
                 entity_id="sensor.kitchen_lux",
                 area_id="kitchen",
                 device_id=None,
                 original_device_class=None,
             ),
-            "sensor.kitchen_illuminance": MagicMock(
+            "sensor.kitchen_illuminance": _entry(
                 entity_id="sensor.kitchen_illuminance",
                 area_id="kitchen",
                 device_id=None,
                 original_device_class=None,
             ),
-            "sensor.kitchen_humidity": MagicMock(
+            "sensor.kitchen_humidity": _entry(
                 entity_id="sensor.kitchen_humidity",
                 area_id="kitchen",
                 device_id=None,
@@ -461,20 +472,20 @@ class TestGetIlluminanceSensorsInArea:
 
         entity_reg = MagicMock()
         entity_reg.entities = {
-            "sensor.real_lux": MagicMock(
+            "sensor.real_lux": _entry(
                 entity_id="sensor.real_lux",
                 area_id="kitchen",
                 device_id=None,
                 original_device_class="illuminance",
             ),
-            "sensor.kitchen_daynight_lighting_lux": MagicMock(
+            "sensor.kitchen_daynight_lighting_lux": _entry(
                 entity_id="sensor.kitchen_daynight_lighting_lux",
                 area_id="kitchen",
                 device_id=None,
                 platform="daynight_lighting",
                 original_device_class="illuminance",
             ),
-            "sensor.kitchen_daynight_lighting_illuminance_sensors": MagicMock(
+            "sensor.kitchen_daynight_lighting_illuminance_sensors": _entry(
                 entity_id="sensor.kitchen_daynight_lighting_illuminance_sensors",
                 area_id="kitchen",
                 device_id=None,
@@ -624,3 +635,105 @@ class TestExcludedMotionSensorsParsing:
     def test_missing_defaults_to_empty_list(self):
         cfg = DayNightConfig.from_ha_options({})
         assert cfg.excluded_motion_sensors == []
+
+
+class TestUnreadableRegistries:
+    """A registry that cannot be read means "nothing discovered", with the reason logged."""
+
+    @pytest.mark.parametrize(
+        "discover",
+        [get_lights_in_area, get_motion_sensors_in_area, get_illuminance_sensors_in_area],
+    )
+    def test_returns_nothing_and_logs_the_reason(self, discover, caplog):
+        import logging
+
+        with patch(
+            "custom_components.daynight_lighting.area_discovery.er"
+        ) as mock_er, patch("custom_components.daynight_lighting.area_discovery.dr"):
+            mock_er.async_get.side_effect = KeyError("entity_registry")
+            with caplog.at_level(
+                logging.DEBUG, logger="custom_components.daynight_lighting.area_discovery"
+            ):
+                assert discover(MagicMock(), "kitchen") == []
+
+        assert "registry unavailable" in caplog.text
+
+
+class TestGetAreaName:
+    """The area registry looks areas up with ``async_get_area``, not ``async_get``."""
+
+    @staticmethod
+    def _registry(areas: dict):
+        # SimpleNamespace has no other methods, like the real AreaRegistry.
+        return SimpleNamespace(async_get_area=areas.get)
+
+    def test_returns_the_friendly_name(self):
+        registry = self._registry({"kitchen": SimpleNamespace(name="Kitchen")})
+        with patch("custom_components.daynight_lighting.area_discovery.ar") as mock_ar:
+            mock_ar.async_get.return_value = registry
+            assert get_area_name(MagicMock(), "kitchen") == "Kitchen"
+
+    def test_unknown_area_has_no_name(self):
+        with patch("custom_components.daynight_lighting.area_discovery.ar") as mock_ar:
+            mock_ar.async_get.return_value = self._registry({})
+            assert get_area_name(MagicMock(), "nowhere") is None
+
+
+def _discover(entries, discover, device_area="master_bedroom"):
+    """Scan a registry with realistic defaults and a device-area fallback."""
+    registry = SimpleNamespace(entities={e.entity_id: e for e in entries})
+    devices = MagicMock()
+    devices.async_get.return_value = SimpleNamespace(area_id=device_area)
+    with patch("custom_components.daynight_lighting.area_discovery.er") as er, patch(
+        "custom_components.daynight_lighting.area_discovery.dr"
+    ) as dr:
+        er.async_get.return_value = registry
+        dr.async_get.return_value = devices
+        return discover(MagicMock(), "master_bedroom")
+
+
+def test_finds_occupancy_radar_via_device_area():
+    """A radar's class, not a name heuristic, discovers it only in its area."""
+    radar = _entry(
+        entity_id="binary_sensor.xiao_ld2410c_bh1750_presence2_radar_target",
+        device_id="radar", original_device_class="occupancy",
+    )
+    assert _discover([radar], get_motion_sensors_in_area) == [radar.entity_id]
+    assert _discover([radar], get_motion_sensors_in_area, "bedroom") == []
+
+
+def test_user_device_class_override_wins():
+    """Show as overrides can opt sensors in or out of discovery."""
+    for original in ("occupancy", None):
+        motion = _entry(entity_id="binary_sensor.radar", device_id="d",
+                        original_device_class=original, device_class="motion")
+        assert _discover([motion], get_motion_sensors_in_area) == [motion.entity_id]
+    door = _entry(entity_id="binary_sensor.motion", device_id="d",
+                  original_device_class="motion", device_class="door")
+    assert _discover([door], get_motion_sensors_in_area) == []
+    lux = _entry(entity_id="sensor.reading", device_id="d",
+                 original_device_class="temperature", device_class="illuminance")
+    assert _discover([lux], get_illuminance_sensors_in_area) == [lux.entity_id]
+
+
+def test_keyword_fallback_ignores_other_device_classes():
+    """Diagnostic battery entities must not masquerade as control inputs."""
+    battery = _entry(entity_id="binary_sensor.motion_detector_basement_battery",
+                     device_id="d", original_device_class="battery")
+    motion = _entry(entity_id="binary_sensor.hall_motion", device_id="d")
+    lux = _entry(entity_id="sensor.lux_meter_battery", device_id="d",
+                 original_device_class="battery")
+    assert _discover([battery, motion], get_motion_sensors_in_area) == [motion.entity_id]
+    assert _discover([lux], get_illuminance_sensors_in_area) == []
+
+
+@pytest.mark.parametrize("entity_id,device_class,discover", [
+    ("light.bulb", None, get_lights_in_area),
+    ("binary_sensor.radar", "occupancy", get_motion_sensors_in_area),
+    ("sensor.reading", "illuminance", get_illuminance_sensors_in_area),
+])
+def test_disabled_entities_are_not_discovered(entity_id, device_class, discover):
+    """Entries without enabled state producers are never adopted."""
+    entity = _entry(entity_id=entity_id, device_id="d",
+                    original_device_class=device_class, disabled_by="user")
+    assert _discover([entity], discover) == []

@@ -7,15 +7,15 @@ Home Assistant restarts.  Uses HA's ``Store`` for file-based persistence.
 * **held_lights** – lights we must not touch, mapped to the reason they were
   held (``"detected"`` for an external intervention, ``"service"`` for a
   ``turn_on``/``turn_off`` with ``hold: true``). A service hold lives until
-  an explicit release or a mode change; a detected hold survives the mode
-  change and only ends through an explicit release.
+  an explicit release, a mode change or its configured timeout; detected
+  holds may survive phase changes according to the instance options.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypedDict
 
 from homeassistant.helpers.storage import Store
 
@@ -30,6 +30,19 @@ SAVE_DELAY_SECONDS = 2
 # Reasons a light can be held. Persisted alongside the entity_id.
 HOLD_REASON_DETECTED = "detected"
 HOLD_REASON_SERVICE = "service"
+
+
+class ExpectedRecord(TypedDict, total=False):
+    """What we last commanded a light to be, as it is persisted.
+
+    ``total=False`` because the record is loaded from storage written by
+    older versions; readers must tolerate a missing key.
+    """
+
+    on: bool
+    brightness_pct: int | None  # None: brightness was not ours to control
+    kelvin: int | None  # None: colour was not ours to control
+    timestamp: float  # ``time.time()`` of when the command was recorded
 
 
 class StateController:
@@ -48,10 +61,10 @@ class StateController:
         )
         self._lights_we_control: set[str] = set()
         self._held_lights: dict[str, str] = {}
+        self._hold_set_at: dict[str, float] = {}
         self._lux_calibration: float | None = None  # LUX at 100% brightness
-        # Expected state per light: {light_id: {"brightness_pct": int, "mode": str, "timestamp": float}}
         # Used for external control detection - persists across reboots
-        self._expected_states: dict[str, dict[str, Any]] = {}
+        self._expected_states: dict[str, ExpectedRecord] = {}
 
     # ------------------------------------------------------------------
     #  Load / Save
@@ -63,6 +76,14 @@ class StateController:
         if data:
             self._lights_we_control = set(data.get("lights_we_control", []))
             self._held_lights = self._migrate_held_lights(data.get("held_lights"))
+            restored_at = time.time()
+            timestamps = data.get("hold_set_at", {})
+            self._hold_set_at = {
+                lid: float(timestamps.get(lid, restored_at))
+                for lid in self._held_lights
+            }
+            if any(lid not in timestamps for lid in self._held_lights):
+                self._schedule_save()
             self._lux_calibration = data.get("lux_calibration")
             # Load expected states, filtering out stale entries (older than 24
             # hours). The timestamp is written by ``set_expected_state`` with
@@ -108,6 +129,9 @@ class StateController:
         return {
             "lights_we_control": sorted(self._lights_we_control),
             "held_lights": dict(sorted(self._held_lights.items())),
+            "hold_set_at": {
+                lid: self._hold_set_at[lid] for lid in sorted(self._held_lights)
+            },
             "lux_calibration": self._lux_calibration,
             "expected_states": self._expected_states,
         }
@@ -131,7 +155,7 @@ class StateController:
     # ------------------------------------------------------------------
 
     def set_hold(self, lights: list[str], *, reason: str = HOLD_REASON_SERVICE) -> None:
-        """Hold *lights* in place until the phase ends.
+        """Hold *lights* until released, expired, or cleared by a phase change.
 
         The *reason* is recorded so the sensors can show *why* a light is held:
         ``"detected"`` for a foreign intervention, ``"service"`` for a
@@ -139,8 +163,10 @@ class StateController:
         """
         if not lights:
             return
+        now = time.time()
         for lid in lights:
             self._held_lights[lid] = reason
+            self._hold_set_at[lid] = now
         self._schedule_save()
 
     def release_hold(self, lights: list[str] | None = None) -> None:
@@ -154,11 +180,15 @@ class StateController:
                 if lid in self._held_lights:
                     del self._held_lights[lid]
                     removed = True
+        self._hold_set_at = {
+            lid: stamp for lid, stamp in self._hold_set_at.items()
+            if lid in self._held_lights
+        }
         if removed:
             self._schedule_save()
 
     def clear_holds(self, keep_detected: bool = False) -> None:
-        """Drop holds, so a phase entry starts from a clean default.
+        """Drop phase-scoped holds, optionally preserving detected holds.
 
         With ``keep_detected=True`` the holds that record a *foreign*
         intervention (``"detected"`` — a scene, a manual dim) are preserved:
@@ -168,16 +198,22 @@ class StateController:
         they belong to the phase they were set in.
         """
         if keep_detected:
-            before = len(self._held_lights)
-            self._held_lights = {
-                lid: reason
-                for lid, reason in self._held_lights.items()
-                if reason == HOLD_REASON_DETECTED
-            }
-            if len(self._held_lights) != before:
-                self._schedule_save()
-            return
-        self.release_hold()
+            self.release_hold([
+                lid for lid, reason in self._held_lights.items()
+                if reason != HOLD_REASON_DETECTED
+            ])
+        else:
+            self.release_hold()
+
+    def expired_holds(self, timeout_min: int) -> list[str]:
+        """Return holds whose wall-clock lifetime elapsed; zero disables expiry."""
+        if timeout_min <= 0:
+            return []
+        now = time.time()
+        return sorted(
+            lid for lid in self._held_lights
+            if now - self._hold_set_at[lid] >= timeout_min * 60
+        )
 
     def get_held_lights(self) -> set[str]:
         """Return a copy of the currently held lights."""
@@ -219,6 +255,7 @@ class StateController:
         """Clear all state (e.g. switch turned off)."""
         self._lights_we_control.clear()
         self._held_lights.clear()
+        self._hold_set_at.clear()
         self._schedule_save()
 
     def prune(self, valid_lights: list[str]) -> None:
@@ -226,9 +263,7 @@ class StateController:
         valid = set(valid_lights)
         before = len(self._lights_we_control)
         self._lights_we_control &= valid
-        self._held_lights = {
-            lid: reason for lid, reason in self._held_lights.items() if lid in valid
-        }
+        self.release_hold(sorted(set(self._held_lights) - valid))
         if len(self._lights_we_control) < before:
             _LOGGER.debug(
                 "[%s] State pruned: removed %d stale entity_ids",
@@ -293,31 +328,19 @@ class StateController:
             kelvin if kelvin is not None else "N/A",
         )
 
-    def get_expected_state(self, light_id: str) -> dict[str, Any] | None:
+    def get_expected_state(self, light_id: str) -> ExpectedRecord | None:
         """Get expected state for a light, or None if not recorded.
 
-        Returns dict with keys: on, brightness_pct, kelvin, timestamp
+        The returned record is the stored one, not a copy.
         """
         return self._expected_states.get(light_id)
 
-    def clear_expected_state(self, light_id: str) -> None:
-        """Clear expected state for a light.
+    def get_expected_timestamp(self, light_id: str) -> float | None:
+        """When the expectation for *light_id* was recorded, None if never.
 
-        Called when light is removed from config.
+        A newer timestamp is how a caller learns that a light was commanded
+        (or adopted) in between, without comparing the values themselves.
         """
-        if light_id in self._expected_states:
-            del self._expected_states[light_id]
-            self._schedule_save()
+        expected = self._expected_states.get(light_id)
+        return expected.get("timestamp") if expected is not None else None
 
-    def prune_expected_states(self, valid_lights: list[str]) -> None:
-        """Remove expected states for lights no longer in config."""
-        valid = set(valid_lights)
-        stale = set(self._expected_states.keys()) - valid
-        if stale:
-            for lid in stale:
-                del self._expected_states[lid]
-            self._schedule_save()
-
-    def get_all_expected_states(self) -> dict[str, dict[str, Any]]:
-        """Return all expected states (for mode transitions)."""
-        return dict(self._expected_states)

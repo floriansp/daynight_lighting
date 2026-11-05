@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .instance_data import KEY_MAIN_SWITCH, instance_entity
+from .instance_data import instance_controller
 from .services import (
     ADJUST_BRIGHTNESS_SCHEMA,
     CALIBRATE_LUX_SCHEMA,
@@ -138,7 +138,7 @@ async def _async_options_updated(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> None:
     """Called when the user saves new options in the UI."""
-    main_switch = instance_entity(hass, config_entry.entry_id, KEY_MAIN_SWITCH)
+    main_switch = instance_controller(hass, config_entry.entry_id)
     if main_switch is not None:
         main_switch.async_options_changed()
         _LOGGER.debug(

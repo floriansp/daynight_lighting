@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.light import ATTR_BRIGHTNESS_PCT, ATTR_COLOR_TEMP_KELVIN
 from homeassistant.core import callback
@@ -19,10 +19,9 @@ from ..context import SharedHandlerDeps
 from ..manual_control import ExpectedState
 from ..protocols import ColorProvider
 from ..domain.brightness import lux_to_brightness_pct, ramp_value
+from .base import BaseModeHandler
 
 if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
-
     from ..illuminance import IlluminanceReader
 
 __all__ = ["SleepModeHandler"]
@@ -30,7 +29,7 @@ __all__ = ["SleepModeHandler"]
 _LOGGER = logging.getLogger(__name__)
 
 
-class SleepModeHandler:
+class SleepModeHandler(BaseModeHandler):
     """Handles sleep mode: gradual dimming over time."""
 
     def __init__(
@@ -54,7 +53,7 @@ class SleepModeHandler:
             schedule: Schedule provider for mode determination
             circadian: Color provider for circadian temperature
         """
-        self._shared = shared
+        super().__init__(shared)
         self._config = config
         self._illuminance = illuminance
         self._day_mode_config = day_mode_config
@@ -70,35 +69,6 @@ class SleepModeHandler:
         self._runtime_duration_min: int | None = None
         self._runtime_brightness: int | None = None
         self._runtime_kelvin: int | None = None
-
-    # Convenience properties for shared dependencies
-    @property
-    def _hass(self) -> HomeAssistant:
-        return self._shared.hass
-
-    @property
-    def _instance_name(self) -> str:
-        return self._shared.instance_name
-
-    @property
-    def _lights(self):
-        return self._shared.lights
-
-    @property
-    def _state_ctrl(self):
-        return self._shared.state_ctrl
-
-    @property
-    def _is_control_brightness_on(self) -> Callable[[], bool]:
-        return self._shared.is_control_brightness_on
-
-    @property
-    def _is_control_color_on(self) -> Callable[[], bool]:
-        return self._shared.is_control_color_on
-
-    @property
-    def _get_transition(self) -> Callable[[str], int]:
-        return self._shared.get_transition
 
     def tick(self) -> None:
         """Sleep mode tick: gradual dim, then OFF, then block."""

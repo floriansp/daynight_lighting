@@ -40,7 +40,7 @@ class TestDayToNightTransition:
         )
 
         # Get night handler and call enter (simulates transition)
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 23, 0, 0)
             mock_dt.as_local.return_value = datetime(2026, 6, 15, 23, 0, 0)
             night_handler = switch._get_mode_handler(MODE_NIGHT)
@@ -167,7 +167,7 @@ class TestHandleTickTransitions:
         fake_hass.services.async_call.reset_mock()
 
         # Mock dt_util for schedule operations
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 23, 0, 0)
             mock_dt.as_local.return_value = datetime(2026, 6, 15, 23, 0, 0)
             switch._handle_tick()
@@ -184,7 +184,7 @@ class TestHandleTickTransitions:
         fake_hass.services.async_call.reset_mock()
 
         # Mock dt_util for schedule operations
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 10, 0, 0)
             mock_dt.as_local.return_value = datetime(2026, 6, 15, 10, 0, 0)
             switch._handle_tick()

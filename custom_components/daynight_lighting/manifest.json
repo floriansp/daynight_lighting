@@ -9,5 +9,5 @@
   "issue_tracker": "https://github.com/floriansp/daynight_lighting/issues",
   "loggers": ["custom_components.daynight_lighting"],
   "requirements": [],
-  "version": "1.19.44"
+  "version": "1.20.0"
 }

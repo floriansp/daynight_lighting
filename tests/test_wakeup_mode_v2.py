@@ -25,7 +25,7 @@ from custom_components.daynight_lighting.const import (
     MODE_SLEEP,
     MODE_WAKEUP,
 )
-from custom_components.daynight_lighting.schedule import DayNightSchedule
+from custom_components.daynight_lighting.mode_schedule import DayNightSchedule
 from custom_components.daynight_lighting.config import NightModeConfig, SleepModeConfig, WakeUpModeConfig
 
 
@@ -111,7 +111,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 06:50 - 10 minutes into wake-up, sun is up
             mock_dt.now.return_value = datetime(2026, 6, 15, 6, 50, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 6, 45, 0)
@@ -147,7 +147,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 06:50 - Sun is up (day mode would normally activate)
             mock_dt.now.return_value = datetime(2026, 6, 15, 6, 50, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 6, 40, 0)
@@ -183,7 +183,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 05:45 - Mid wake-up, sun already up
             mock_dt.now.return_value = datetime(2026, 6, 15, 5, 45, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 5, 30, 0)
@@ -217,7 +217,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 23:45 - Before midnight, in wake-up window
             mock_dt.now.return_value = datetime(2026, 6, 15, 23, 45, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 7, 0, 0)
@@ -251,7 +251,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 00:15 - After midnight, in wake-up window
             mock_dt.now.return_value = datetime(2026, 6, 16, 0, 15, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 7, 0, 0)
@@ -285,7 +285,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 00:45 - After wake-up ends at 00:30
             mock_dt.now.return_value = datetime(2026, 6, 16, 0, 45, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 7, 0, 0)
@@ -323,7 +323,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 21:30 - Both sleep and wake-up windows active
             mock_dt.now.return_value = datetime(2026, 6, 15, 21, 30, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 7, 0, 0)
@@ -359,7 +359,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 07:00 - Wake-up ends exactly now
             mock_dt.now.return_value = datetime(2026, 6, 15, 7, 0, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 6, 45, 0)
@@ -393,7 +393,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 06:00 - Before wake-up starts at 06:30
             mock_dt.now.return_value = datetime(2026, 6, 15, 6, 0, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 15, 7, 0, 0)
@@ -427,7 +427,7 @@ class TestWakeupMode2Independence:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 06:50 - Sun is up, no wake-up
             mock_dt.now.return_value = datetime(2026, 6, 15, 6, 50, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 6, 45, 0)
@@ -464,7 +464,7 @@ class TestWakeupMode2EdgeCases:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 03:00 - Night mode
             mock_dt.now.return_value = datetime(2026, 6, 15, 3, 0, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 15, 7, 0, 0)
@@ -518,7 +518,7 @@ class TestWakeupMode2EdgeCases:
         }
         sched = _make_schedule(fake_hass, options)
 
-        with patch("custom_components.daynight_lighting.schedule.dt_util") as mock_dt:
+        with patch("custom_components.daynight_lighting.mode_schedule.dt_util") as mock_dt:
             # 21:20 - In sleep window
             mock_dt.now.return_value = datetime(2026, 6, 15, 21, 20, 0)
             mock_dt.parse_datetime.return_value = datetime(2026, 6, 16, 7, 0, 0)

@@ -347,7 +347,7 @@ _dispatcher.async_dispatcher_send = _async_dispatcher_send  # type: ignore[attr-
 # homeassistant.util.dt
 _dt = sys.modules["homeassistant.util.dt"]
 import homeassistant.util.dt as _dt_real  # noqa: this IS our fake
-# provide real-ish implementations so schedule.py can work
+# provide real-ish implementations so mode_schedule.py can work
 from datetime import datetime, timezone
 
 _dt.now = lambda: datetime.now()  # type: ignore[attr-defined]

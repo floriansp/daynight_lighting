@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from custom_components.daynight_lighting.const import MODE_SLEEP
 from custom_components.daynight_lighting.state_controller import (
     HOLD_REASON_DETECTED,
     HOLD_REASON_SERVICE,
@@ -82,7 +81,7 @@ async def test_matching_light_releases_detected_hold(make_switch, fake_hass, fak
     _seed(fake_store, {"light.a": HOLD_REASON_DETECTED}, {"light.a": _expected_state()})
     fake_hass.states.set("light.a", FakeState(state="on", attributes=MATCHING_ATTRS))
 
-    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.switch"):
+    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.hold_validation"):
         await _start(switch, fake_hass)
 
     assert not switch._state_ctrl.is_held("light.a")
@@ -121,7 +120,7 @@ async def test_unavailable_light_releases_detected_hold(make_switch, fake_hass, 
     _seed(fake_store, {"light.a": HOLD_REASON_DETECTED}, {"light.a": _expected_state()})
     fake_hass.states.set("light.a", FakeState(state="unavailable"))
 
-    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.switch"):
+    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.hold_validation"):
         await _start(switch, fake_hass)
 
     assert not switch._state_ctrl.is_held("light.a")
@@ -135,7 +134,7 @@ async def test_missing_expected_state_releases_detected_hold(make_switch, fake_h
     _seed(fake_store, {"light.a": HOLD_REASON_DETECTED})
     fake_hass.states.set("light.a", FakeState(state="on", attributes=MATCHING_ATTRS))
 
-    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.switch"):
+    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.hold_validation"):
         await _start(switch, fake_hass)
 
     assert not switch._state_ctrl.is_held("light.a")
@@ -224,8 +223,8 @@ async def test_revalidation_runs_in_both_load_paths(make_switch, fake_hass, fake
     _seed(fake_store, {"light.a": HOLD_REASON_DETECTED}, {"light.a": _expected_state()})
     fake_hass.states.set("light.a", FakeState(state="on", attributes=MATCHING_ATTRS))
 
-    spy = MagicMock(wraps=switch._revalidate_restored_holds)
-    switch._revalidate_restored_holds = spy
+    spy = MagicMock(wraps=switch._restored_holds.revalidate_restored)
+    switch._restored_holds.revalidate_restored = spy
 
     await _start(switch, fake_hass, path=path)
 
@@ -233,25 +232,16 @@ async def test_revalidation_runs_in_both_load_paths(make_switch, fake_hass, fake
     assert not switch._state_ctrl.is_held("light.a")
 
 
-class _ActiveSleepRamp:
-    """Sleep handler stand-in that reports itself as ramping."""
-
-    def is_sleep_active(self) -> bool:
-        return True
-
-    def tick(self) -> None:
-        pass
-
-
 @pytest.mark.asyncio
-async def test_sleep_ramp_judges_on_off_only(make_switch, fake_hass, fake_store):
+async def test_sleep_ramp_judges_on_off_only(make_switch, fake_hass, fake_store, monkeypatch):
     """The ramp moves brightness legitimately, so it must not keep a hold."""
     switch, *_ = make_switch(day_mode=True)
     _seed(fake_store, {"light.a": HOLD_REASON_DETECTED}, {"light.a": _expected_state()})
     fake_hass.states.set("light.a", FakeState(state="on", attributes=DIVERGING_ATTRS))
 
-    ramp = _ActiveSleepRamp()
-    switch._get_mode_handler = lambda mode: ramp if mode == MODE_SLEEP else None
+    # A sleep handler that reports itself as ramping, without running the ramp.
+    monkeypatch.setattr(switch._handlers.sleep, "is_sleep_active", lambda: True)
+    monkeypatch.setattr(switch._handlers.sleep, "tick", lambda: None)
 
     await _start(switch, fake_hass)
 
@@ -322,7 +312,7 @@ async def test_detection_and_revalidation_share_one_ruler(
 
     # Re-validation: the same divergence must not keep a restored hold either.
     switch._state_ctrl.set_hold(["light.a"], reason=HOLD_REASON_DETECTED)
-    switch._revalidate_restored_holds()
+    switch._restored_holds.revalidate_restored()
     assert not switch._state_ctrl.is_held("light.a")
 
 
@@ -358,7 +348,7 @@ async def test_missing_light_state_keeps_the_hold_for_later(make_switch, fake_ha
     await _start(switch, fake_hass)
 
     assert switch._state_ctrl.is_held("light.a")
-    assert "light.a" in switch._pending_hold_checks
+    assert switch._restored_holds.is_pending("light.a")
 
 
 @pytest.mark.asyncio
@@ -375,11 +365,11 @@ async def test_deferred_check_releases_when_the_lamp_reports_matching(
 
     state = FakeState(state="on", attributes=MATCHING_ATTRS)
     fake_hass.states.set("light.a", state)
-    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.switch"):
+    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.hold_validation"):
         report_light_state(light_listener(captured), "light.a", state)
 
     assert not switch._state_ctrl.is_held("light.a")
-    assert "light.a" not in switch._pending_hold_checks
+    assert not switch._restored_holds.is_pending("light.a")
     assert "matched expected state" in caplog.text
 
 
@@ -400,7 +390,7 @@ async def test_deferred_check_keeps_when_the_lamp_reports_diverging(
     report_light_state(light_listener(captured), "light.a", state)
 
     assert switch._state_ctrl.is_held("light.a")
-    assert "light.a" not in switch._pending_hold_checks
+    assert not switch._restored_holds.is_pending("light.a")
 
 
 @pytest.mark.asyncio
@@ -418,7 +408,7 @@ async def test_deferred_check_waits_for_a_real_state(make_switch, fake_hass, fak
     report_light_state(listener, "light.a", unavailable)
 
     assert switch._state_ctrl.is_held("light.a")
-    assert "light.a" in switch._pending_hold_checks
+    assert switch._restored_holds.is_pending("light.a")
 
     reported = FakeState(state="on", attributes=MATCHING_ATTRS)
     fake_hass.states.set("light.a", reported)
@@ -503,8 +493,8 @@ async def test_pending_check_is_dropped_when_the_hold_ends(
 
     state = FakeState(state="on", attributes=MATCHING_ATTRS)
     fake_hass.states.set("light.a", state)
-    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.switch"):
+    with caplog.at_level(logging.INFO, logger="custom_components.daynight_lighting.hold_validation"):
         report_light_state(light_listener(captured), "light.a", state)
 
-    assert "light.a" not in switch._pending_hold_checks
+    assert not switch._restored_holds.is_pending("light.a")
     assert "Restored hold released" not in caplog.text

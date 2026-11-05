@@ -125,6 +125,8 @@
             "name": "Manuelle Geräte & Sensoren",
             "description": "Zusätzliche Lampen und Sensoren neben denen aus dem Bereich. Leer lassen, um nur automatisch erkannte Entitäten zu verwenden.",
             "data": {
+              "detected_hold_survives_phase": "Erkannte Holds überleben Phasenwechsel",
+              "hold_timeout_min": "Hold-Frist (Minuten, 0 = unbegrenzt)",
               "lights": "Zusätzliche Lampen (optional)",
               "light_sensor": "Zusätzlicher Lichtsensor (optional)",
               "motion_sensor": "Zusätzlicher Bewegungssensor (optional)"

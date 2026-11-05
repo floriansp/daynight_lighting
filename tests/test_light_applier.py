@@ -7,6 +7,8 @@ import pytest
 from custom_components.daynight_lighting.light_applier import LightApplier
 from custom_components.daynight_lighting.state_controller import StateController
 
+from tests.conftest import FakeState
+
 
 def _make_applier(
     fake_hass, fake_store, transition_sec: int = 2, mark_applied=None
@@ -177,3 +179,62 @@ class TestTransitionContext:
         applier.turn_off(["light.a"], transition=context)
 
         assert seen == [context, context]
+
+
+def _on(fake_hass, light: str, brightness_pct: int) -> None:
+    """Show *light* as on at *brightness_pct* percent."""
+    fake_hass.states.set(
+        light,
+        FakeState(state="on", attributes={"brightness": round(brightness_pct * 255 / 100)}),
+    )
+
+
+class TestStepBrightness:
+    """A wall-button step moves each light and never walks it below the floor."""
+
+    def test_steps_an_on_light_and_records_the_target(self, fake_hass, fake_store):
+        applier, state_ctrl = _make_applier(fake_hass, fake_store)
+        _on(fake_hass, "light.a", 50)
+
+        applier.step_brightness(["light.a"], 10, floor=5)
+
+        _, payload = _light_call(fake_hass)
+        assert payload["brightness_pct"] == 60
+        assert state_ctrl.get_expected_state("light.a")["brightness_pct"] == 60
+
+    def test_never_goes_below_the_floor(self, fake_hass, fake_store):
+        applier, _ = _make_applier(fake_hass, fake_store)
+        _on(fake_hass, "light.a", 8)
+
+        applier.step_brightness(["light.a"], -30, floor=5)
+
+        _, payload = _light_call(fake_hass)
+        assert payload["brightness_pct"] == 5
+
+    def test_never_goes_above_100(self, fake_hass, fake_store):
+        applier, _ = _make_applier(fake_hass, fake_store)
+        _on(fake_hass, "light.a", 95)
+
+        applier.step_brightness(["light.a"], 20, floor=5)
+
+        _, payload = _light_call(fake_hass)
+        assert payload["brightness_pct"] == 100
+
+    def test_an_off_light_stays_off_when_dimming(self, fake_hass, fake_store):
+        applier, _ = _make_applier(fake_hass, fake_store)
+        fake_hass.states.set("light.a", FakeState(state="off"))
+
+        applier.step_brightness(["light.a"], -10, floor=5)
+
+        fake_hass.services.async_call.assert_not_called()
+
+    def test_an_off_light_comes_on_at_the_step_when_brightening(
+        self, fake_hass, fake_store
+    ):
+        applier, _ = _make_applier(fake_hass, fake_store)
+        fake_hass.states.set("light.a", FakeState(state="off"))
+
+        applier.step_brightness(["light.a"], 10, floor=5)
+
+        _, payload = _light_call(fake_hass)
+        assert payload["brightness_pct"] == 10

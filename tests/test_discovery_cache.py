@@ -102,7 +102,7 @@ class TestAreaDiscoveryCache:
             return_value=[],
         ):
             # Resolving motion sensors goes through the cached discovery.
-            motion_ids = switch._resolve_sensor_ids("motion_sensor")
+            motion_ids = switch._discovery.resolve_sensor_ids("motion_sensor")
 
         assert motion_ids == ["binary_sensor.kitchen_motion", "binary_sensor.motion"]
 
@@ -133,7 +133,7 @@ class TestAreaDiscoveryCache:
             f"{_AREA_DISCOVERY}.get_illuminance_sensors_in_area",
             return_value=[],
         ):
-            motion_ids = switch._resolve_sensor_ids("motion_sensor")
+            motion_ids = switch._discovery.resolve_sensor_ids("motion_sensor")
 
         # The excluded camera sensor is dropped; the manual sensor still added.
         assert motion_ids == ["binary_sensor.kitchen_motion", "binary_sensor.motion"]
@@ -162,7 +162,7 @@ class TestAreaDiscoveryCache:
             f"{_AREA_DISCOVERY}.get_illuminance_sensors_in_area",
             return_value=["sensor.kitchen_lux"],
         ):
-            lux_ids = switch._resolve_sensor_ids("light_sensor")
+            lux_ids = switch._discovery.resolve_sensor_ids("light_sensor")
 
         # Illuminance sensors are not filtered by excluded_motion_sensors.
         assert lux_ids == ["sensor.kitchen_lux", "sensor.lux"]
@@ -334,3 +334,33 @@ class TestRegistryDrivenDiscovery:
         assert EVENT_ENTITY_REGISTRY_UPDATED in listeners
         assert "device_registry_updated" in listeners
         assert EVENT_AREA_REGISTRY_UPDATED in listeners
+
+
+def test_master_bedroom_shape_resolves_discovered_sensors(make_switch):
+    """Null manual sensors still resolve real area inputs, respecting opt-outs."""
+    from tests.test_area_discovery import _entry
+    from types import SimpleNamespace
+
+    radar = "binary_sensor.xiao_ld2410c_bh1750_presence2_radar_target"
+    lux = "sensor.radar_reading"
+    registry = SimpleNamespace(entities={
+        radar: _entry(entity_id=radar, device_id="radar",
+                      original_device_class="occupancy"),
+        lux: _entry(entity_id=lux, device_id="radar",
+                    original_device_class="illuminance"),
+    })
+    devices = MagicMock()
+    devices.async_get.return_value = SimpleNamespace(area_id="master_bedroom")
+    with patch(f"{_AREA_DISCOVERY}.er") as er, patch(f"{_AREA_DISCOVERY}.dr") as dr:
+        er.async_get.return_value = registry
+        dr.async_get.return_value = devices
+        for excluded in ([], [radar]):
+            switch, *_ = make_switch(options={
+                "area_id": "master_bedroom", "use_area_discovery": True,
+                "light_sensor": None, "motion_sensor": None,
+                "excluded_motion_sensors": excluded,
+            }, day_mode=True)
+            assert switch._discovery.resolve_sensor_ids("light_sensor") == [lux]
+            assert switch._discovery.resolve_sensor_ids("motion_sensor") == (
+                [] if excluded else [radar]
+            )

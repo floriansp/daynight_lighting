@@ -42,9 +42,8 @@ from .const import (
 )
 from .instance_data import (
     KEY_DAY_BRIGHTNESS,
-    KEY_MAIN_SWITCH,
+    instance_controller,
     KEY_NIGHT_BRIGHTNESS,
-    instance_entity,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,25 +94,23 @@ class _BrightnessDial(NumberEntity, RestoreEntity):
 
     def _write_state(self) -> None:
         """Publish the current value, if we are attached to Home Assistant."""
-        if getattr(self, "hass", None) is not None:
+        if self.hass is not None:
             self.async_write_ha_state()
 
     def _write_and_apply(self) -> None:
         """Publish the new state and let the instance act on it."""
-        hass = getattr(self, "hass", None)
+        hass = self.hass
         if hass is None:
             return
         self.async_write_ha_state()
-        main_switch = instance_entity(
-            hass, self._config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, self._config_entry.entry_id)
         if main_switch is None:
             return
         if main_switch.get_active_mode() == self._applies_in:
             main_switch.reapply_dialled_brightness()
         # The "Reset brightness" button mirrors the dial: after a step or a
         # slider change it must become pressable, so the monitors re-read.
-        main_switch._notify_monitors()
+        main_switch.notify_monitors()
 
     async def _async_restored_number(self) -> int | None:
         """The value stored before the restart, None if there is none."""
@@ -170,13 +167,11 @@ class DayNightNightBrightnessNumber(_BrightnessDial):
         The main switch owns the resolution (manual sensor or area discovery),
         so we ask it rather than duplicating that logic here.
         """
-        hass = getattr(self, "hass", None)
+        hass = self.hass
         if hass is None:
             return False
-        main_switch = instance_entity(
-            hass, self._config_entry.entry_id, KEY_MAIN_SWITCH
-        )
-        if main_switch is None or not hasattr(main_switch, "has_motion_sensor"):
+        main_switch = instance_controller(hass, self._config_entry.entry_id)
+        if main_switch is None:
             return False
         return main_switch.has_motion_sensor()
 
@@ -283,13 +278,11 @@ class DayNightDayBrightnessNumber(_BrightnessDial):
         The main switch owns the resolution (manual sensor or area discovery),
         so we ask it rather than duplicating that logic here.
         """
-        hass = getattr(self, "hass", None)
+        hass = self.hass
         if hass is None:
             return False
-        main_switch = instance_entity(
-            hass, self._config_entry.entry_id, KEY_MAIN_SWITCH
-        )
-        if main_switch is None or not hasattr(main_switch, "has_lux_sensor"):
+        main_switch = instance_controller(hass, self._config_entry.entry_id)
+        if main_switch is None:
             return False
         return main_switch.has_lux_sensor()
 

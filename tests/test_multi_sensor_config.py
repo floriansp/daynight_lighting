@@ -91,11 +91,11 @@ class TestResolveSensorIdsMultipleManual:
                 "light_sensor": ["sensor.lux1", "sensor.lux2"],
             }
         )
-        assert switch._resolve_sensor_ids("motion_sensor") == [
+        assert switch._discovery.resolve_sensor_ids("motion_sensor") == [
             "binary_sensor.m1",
             "binary_sensor.m2",
         ]
-        assert switch._resolve_sensor_ids("light_sensor") == [
+        assert switch._discovery.resolve_sensor_ids("light_sensor") == [
             "sensor.lux1",
             "sensor.lux2",
         ]
@@ -123,7 +123,7 @@ class TestResolveSensorIdsMultipleManual:
         ), patch(
             f"{_AREA_DISCOVERY}.get_illuminance_sensors_in_area", return_value=[]
         ):
-            motion_ids = switch._resolve_sensor_ids("motion_sensor")
+            motion_ids = switch._discovery.resolve_sensor_ids("motion_sensor")
 
         # kitchen_motion is already discovered → not duplicated; m2 added.
         assert motion_ids == ["binary_sensor.kitchen_motion", "binary_sensor.m2"]

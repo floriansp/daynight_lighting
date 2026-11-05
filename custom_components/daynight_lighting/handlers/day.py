@@ -6,7 +6,7 @@ Handles day mode: LUX-based brightness with circadian color control.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.light import ATTR_BRIGHTNESS_PCT, ATTR_COLOR_TEMP_KELVIN
 
@@ -20,14 +20,14 @@ from ..const import (
 from ..context import SharedHandlerDeps
 from ..domain.brightness import (
     apply_weather_modifier,
+    feedback_gain_bound,
     lux_to_brightness_pct,
 )
 from ..manual_control import ExpectedState
 from ..protocols import ColorProvider
+from .base import BaseModeHandler
 
 if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
-
     from ..illuminance import IlluminanceReader
     from ..weather import WeatherReader
 
@@ -36,7 +36,7 @@ __all__ = ["DayModeHandler"]
 _LOGGER = logging.getLogger(__name__)
 
 
-class DayModeHandler:
+class DayModeHandler(BaseModeHandler):
     """Handles day mode: LUX-based brightness, circadian color."""
 
     def __init__(
@@ -56,41 +56,12 @@ class DayModeHandler:
             weather: Weather reader for brightness modifiers
             circadian: Color provider for circadian temperature
         """
-        self._shared = shared
+        super().__init__(shared)
         self._config = config
         self._illuminance = illuminance
         self._weather = weather
         self._circadian = circadian
         self._last_applied_kelvin: int | None = None
-
-    # Convenience properties for shared dependencies
-    @property
-    def _hass(self) -> HomeAssistant:
-        return self._shared.hass
-
-    @property
-    def _instance_name(self) -> str:
-        return self._shared.instance_name
-
-    @property
-    def _lights(self):
-        return self._shared.lights
-
-    @property
-    def _state_ctrl(self):
-        return self._shared.state_ctrl
-
-    @property
-    def _is_control_brightness_on(self) -> Callable[[], bool]:
-        return self._shared.is_control_brightness_on
-
-    @property
-    def _is_control_color_on(self) -> Callable[[], bool]:
-        return self._shared.is_control_color_on
-
-    @property
-    def _get_transition(self) -> Callable[[str], int]:
-        return self._shared.get_transition
 
     def tick(self) -> None:
         """Execute day mode tick: apply the day values.
@@ -273,6 +244,13 @@ class DayModeHandler:
             self._apply_day_mode_fallback(lights)
             return
 
+        gain_bound = feedback_gain_bound(
+            self._illuminance.get_lux_raw(),
+            self._illuminance.get_last_applied_brightness(),
+            self._config.lux_on, self._config.lux_off,
+            self._config.min_brightness, self._config.max_brightness,
+            self._illuminance.get_lux_calibration(),
+        )
         pct = self._lux_curve_pct()
 
         if pct is None:
@@ -283,7 +261,7 @@ class DayModeHandler:
                 lights,
             )
             self._turn_off_lights(lights)
-            self._illuminance.record_brightness_applied(0)
+            self._illuminance.record_brightness_applied(0, gain_bound=gain_bound)
             self._last_applied_kelvin = None
             return
 
@@ -354,7 +332,7 @@ class DayModeHandler:
             )
 
             if brightness_needs_update:
-                self._illuminance.record_brightness_applied(pct)
+                self._illuminance.record_brightness_applied(pct, gain_bound=gain_bound)
             if color_needs_update and kelvin is not None:
                 self._last_applied_kelvin = kelvin
         else:
@@ -445,7 +423,3 @@ class DayModeHandler:
             self._instance_name,
             fallback,
         )
-
-    def _turn_off_lights(self, lights: list[str]) -> None:
-        """Turn off lights with transition."""
-        self._shared.light_applier.turn_off(lights, transition="tick")

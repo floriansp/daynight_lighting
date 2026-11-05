@@ -5,6 +5,57 @@ All notable changes to DayNight Lighting will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-11-05
+
+### Added
+- New instance option **Detected holds survive phase changes**
+  (`detected_hold_survives_phase`, default on). With the default, a detected
+  hold stays across mode changes until it is released, as before. Turning it
+  off lets a mode change end detected holds too.
+- New instance option **Hold timeout** (`hold_timeout_min`, default `0` =
+  never). With a value above 0, every hold, detected and service alike,
+  expires that many minutes after it was last set. Another detected change or
+  another `hold: true` call on the same light restarts the time limit.
+  - Expiry is checked once a minute, so a hold can last up to a minute longer.
+  - The time limit counts wall-clock time, including during a restart. A hold
+    that ran out while Home Assistant was down is released at startup.
+  - An expired hold is released the same way as `release_hold` (same branches
+    and log line), except that the brightness dials are not reset. An expired
+    off-hold can therefore switch the light back on, in low LUX by day or with
+    motion at night.
+
+### Changed
+- Entering sleep or wake-up, by the clock or by service, now ends all holds,
+  detected ones included. An evening hold no longer keeps the bedtime light or
+  the morning wake-up away from the lights they are meant for.
+- Log messages for restored-hold checks, external-control detection, adoption
+  after a release and area discovery are now written under their own logger
+  names (for example `hold_validation`) instead of the switch's logger. Adjust
+  any logger filters accordingly.
+- The debug lines logged for individual mode transitions (such as
+  `Night→Day: switching to day mode`) are no longer written.
+- When area discovery cannot read the entity or device registry, the reason is
+  now logged at debug level. Previously an empty result looked the same as an
+  area with no entities.
+
+### Fixed
+- The area's friendly name is shown again instead of the area ID. The lookup
+  used a call that does not exist and the failure was swallowed.
+- A sleep or wake-up started by service (for example an alarm clock's wake-up)
+  now shows as the room's mode while it runs. Before, the mode and progress
+  sensors stayed on night. The sensors update immediately when such a ramp
+  starts or stops.
+- Area discovery of motion and illuminance sensors is more stable:
+  - Disabled entities are no longer adopted.
+  - A device class set by the user ("Show as") now takes precedence over the
+    integration's default.
+  - `occupancy` sensors now count as motion sensors, alongside `motion` and
+    `presence`.
+  - Entity-ID keywords are used only for entities that have no device class.
+- LUX-based day brightness no longer flaps as easily when a lamp's own light
+  reaches the illuminance sensor. The feedback is now bounded using
+  non-negative ambient light.
+
 ## [1.19.44] - 2026-11-02
 
 ### Added

@@ -350,7 +350,7 @@ class TestEventDrivenHold:
     def _reset_expected(switch):
         """Drop the expected states the initial tick applied and any grace period."""
         for lid in ("light.a", "light.b"):
-            switch._state_ctrl.clear_expected_state(lid)
+            switch._state_ctrl._expected_states.pop(lid, None)
         switch._manual_control_detector._last_applied_time.clear()
 
     def test_external_change_holds_the_light(self, fake_hass, fake_store, monkeypatch):

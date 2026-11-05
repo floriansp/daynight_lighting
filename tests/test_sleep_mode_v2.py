@@ -69,7 +69,7 @@ class TestSleepEndsBehavior:
         fake_hass.services.async_call.reset_mock()
 
         # Trigger tick with mocked dt_util
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 23, 0, 0)
             mock_dt.as_local.return_value = datetime(2026, 6, 15, 23, 0, 0)
             switch._handle_tick()
@@ -92,7 +92,7 @@ class TestSleepEndsBehavior:
         fake_hass.services.async_call.reset_mock()
 
         # Trigger tick in day mode with mocked dt_util
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 10, 0, 0)
             mock_dt.as_local.return_value = datetime(2026, 6, 15, 10, 0, 0)
             switch._handle_tick()
@@ -160,7 +160,7 @@ class TestMotionClearsSleepBlock:
         fake_hass.services.async_call.reset_mock()
 
         # Trigger tick with mocked dt_util
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 23, 0, 0)
             mock_dt.as_local.return_value = datetime(2026, 6, 15, 23, 0, 0)
             switch._handle_tick()
@@ -174,7 +174,7 @@ class TestInvertedConfigValidation:
 
     def test_inverted_without_duration_logs_error(self, fake_hass, caplog):
         """Inverted config without duration logs ERROR."""
-        from custom_components.daynight_lighting.schedule import DayNightSchedule
+        from custom_components.daynight_lighting.mode_schedule import DayNightSchedule
         from types import SimpleNamespace
 
         # Create config objects
@@ -209,7 +209,7 @@ class TestInvertedConfigValidation:
 
     def test_inverted_with_duration_logs_info(self, fake_hass, caplog):
         """Inverted config WITH duration logs INFO (allowed)."""
-        from custom_components.daynight_lighting.schedule import DayNightSchedule
+        from custom_components.daynight_lighting.mode_schedule import DayNightSchedule
         from types import SimpleNamespace
 
         # Create config objects

@@ -20,7 +20,6 @@ __all__ = [
     "calculate_kelvin_from_elevation",
     # Schedule functions
     "is_in_time_window",
-    "calculate_progress_ratio",
     "calculate_time_after",
     "calculate_time_before",
     "ModeDeterminationContext",
@@ -37,7 +36,6 @@ from .brightness import (
 from .color import calculate_kelvin_from_elevation
 from .schedule import (
     is_in_time_window,
-    calculate_progress_ratio,
     calculate_time_after,
     calculate_time_before,
     ModeDeterminationContext,

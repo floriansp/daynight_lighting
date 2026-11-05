@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-from custom_components.daynight_lighting.schedule import DayNightSchedule
+from custom_components.daynight_lighting.mode_schedule import DayNightSchedule
 from custom_components.daynight_lighting.const import MODE_DAY, MODE_NIGHT
 
 from tests.conftest import FakeState
@@ -87,7 +87,7 @@ class TestIsDayModeAtTime:
         )
         schedule = _make_schedule(fake_hass, night_start=(22, 0))
 
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = MagicMock(time=lambda: dt_time(15, 0))
             assert schedule.is_day_mode() is True
 
@@ -99,7 +99,7 @@ class TestIsDayModeAtTime:
         )
         schedule = _make_schedule(fake_hass, night_start=(22, 0))
 
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = MagicMock(time=lambda: dt_time(23, 0))
             assert schedule.is_day_mode() is False
 
@@ -118,7 +118,7 @@ class TestIsDayModeAtTime:
 
         # At 05:00, sun below horizon, next_rising is today 06:00
         # → morning (not evening after sunset) → night mode
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             # Use real datetime for now() - at 05:00 on 2026-06-16
             mock_dt.now.return_value = datetime(2026, 6, 16, 5, 0, 0)
             # as_local should return the datetime as-is (or with same date)
@@ -138,7 +138,7 @@ class TestIsDayModeAtTime:
         )
         schedule = _make_schedule(fake_hass, night_start=(22, 0))
 
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_now = MagicMock()
             mock_now.time.return_value = dt_time(20, 0)
             mock_now.date.return_value.__eq__ = lambda self, other: False  # Different day
@@ -211,7 +211,7 @@ class TestGetCurrentModeBasic:
         )
         schedule = _make_schedule(fake_hass, night_start=(22, 0))
 
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = MagicMock(time=lambda: dt_time(15, 0))
             assert schedule.get_current_mode() == MODE_DAY
 
@@ -223,7 +223,7 @@ class TestGetCurrentModeBasic:
         )
         schedule = _make_schedule(fake_hass, night_start=(22, 0))
 
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
+        with patch('custom_components.daynight_lighting.mode_schedule.dt_util') as mock_dt:
             mock_dt.now.return_value = MagicMock(time=lambda: dt_time(23, 0))
             assert schedule.get_current_mode() == MODE_NIGHT
 
@@ -282,68 +282,3 @@ class TestWakeUpModeTimeCalculations:
 
         end_time = schedule._get_wakeup_end_time()
         assert end_time == dt_time(7, 30)
-
-
-# ===================================================================
-#  calculate_progress_in_mode
-# ===================================================================
-
-
-class TestCalculateProgressInMode:
-    """Tests for calculate_progress_in_mode method."""
-
-    def test_zero_for_day_mode(self, fake_hass):
-        """Returns 0.0 for day mode (no progress)."""
-        fake_hass.states.set("sun.sun", FakeState(state="above_horizon"))
-        schedule = _make_schedule(fake_hass, night_start=(22, 0))
-
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
-            mock_dt.now.return_value = MagicMock(time=lambda: dt_time(15, 0))
-            assert schedule.calculate_progress_in_mode() == 0.0
-
-    def test_zero_for_night_mode(self, fake_hass):
-        """Returns 0.0 for night mode (no progress)."""
-        fake_hass.states.set("sun.sun", FakeState(state="above_horizon"))
-        schedule = _make_schedule(fake_hass, night_start=(22, 0))
-
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
-            mock_dt.now.return_value = MagicMock(time=lambda: dt_time(23, 0))
-            assert schedule.calculate_progress_in_mode() == 0.0
-
-    def test_progress_for_sleep_mode(self, fake_hass):
-        """Returns progress for sleep mode."""
-        fake_hass.states.set(
-            "sun.sun",
-            FakeState(state="above_horizon"),
-        )
-        schedule = _make_schedule(
-            fake_hass,
-            night_start=(23, 0),
-            sleep_enabled=True,
-            sleep_start=(21, 0),
-            sleep_duration=60,
-        )
-
-        # At 21:30 (30 minutes into 60 minute sleep)
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
-            mock_dt.now.return_value = MagicMock(time=lambda: dt_time(21, 30))
-            progress = schedule.calculate_progress_in_mode()
-            assert 0.4 <= progress <= 0.6  # ~50%
-
-    def test_progress_for_wakeup_mode(self, fake_hass):
-        """Returns progress for wake-up mode."""
-        fake_hass.states.set("sun.sun", FakeState(state="above_horizon"))
-        schedule = _make_schedule(
-            fake_hass,
-            night_start=(22, 0),
-            wakeup_enabled=True,
-            wakeup_time=(7, 0),
-            wakeup_duration=30,
-        )
-
-        # At 6:45 (15 minutes into 30 minute wake-up)
-        with patch('custom_components.daynight_lighting.schedule.dt_util') as mock_dt:
-            mock_dt.now.return_value = MagicMock(time=lambda: dt_time(6, 45))
-            progress = schedule.calculate_progress_in_mode()
-            # Progress depends on mode detection, might be 0 if not in wakeup
-            assert isinstance(progress, float)

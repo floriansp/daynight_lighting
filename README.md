@@ -167,7 +167,7 @@ The integration detects when lights have been changed externally (scenes, manual
 3. If values differ beyond the mode's tolerance, external control is detected
 
 **This approach is:**
-- **Reboot-safe** — Expected states are persisted, and a detected override survives a restart
+- **Reboot-safe** — Expected states are persisted, and a detected override survives a restart (unless its hold timeout ran out meanwhile)
 - **Event-driven** — A change is noticed when the light reports it, not on the next tick
 - **Race-free** — A short grace period after our own commands covers their async latency
 - **Attribute-specific** — Respects Control Brightness/Control Color switches
@@ -193,12 +193,23 @@ A light can be held for one of two reasons, shown per-light on the `on_hold`
 binary sensor:
 
 - **`detected`** — somebody outside the integration changed the light (scene,
-  dimmer, another automation). A detected hold deliberately has **no timeout**
-  and does not auto-reset on stability: it ends only when you release it (via
-  `release_hold`) or the mode changes.
+  dimmer, another automation). There is no stability take-over.
+  With default settings it has **no timeout** and survives a mode change. It ends on
+  `release_hold`, at the start of sleep or wake-up, at a mode change only if
+  *Detected holds survive phase changes* is off, or after `hold_timeout_min`
+  minutes if that is above 0.
 - **`service`** — your automation called `turn_on`/`turn_off` with
   `hold: true`, or called `hold_all`. It is released with `release_hold` or
-  automatically on the next mode transition.
+  automatically on the next mode transition, or after `hold_timeout_min`
+  minutes if that is above 0.
+
+**Hold timeout** (`hold_timeout_min`, default `0` = never). With a value > 0,
+every hold, detected and service alike, expires that many minutes after it was
+last set. Another detected change or another `hold: true` call on the same
+light restarts the time limit. It is checked once a minute, so a hold can last
+up to one minute longer. The time limit counts wall-clock time, also during a
+restart; a hold whose time ran out while HA was down is released at startup.
+`release_hold` always works, independently of both hold options.
 
 The integration's own services never set a `detected` hold — an automation
 that wants the room announces itself with a `hold: true` service call instead,
@@ -214,6 +225,10 @@ is showing — recorded as the expected state, so it is not mistaken for a fresh
 intervention minutes later. Every release logs which case it took
 (`hold released: N light(s), branch=…, commanded=…, adopted=…`); see
 [FLOW.md](docs/FLOW.md#the-life-of-a-hold) for the full matrix.
+An expired hold follows the same release path as `release_hold` (same branches
+and log line), except that the brightness dials are not reset. An expired
+off-hold can therefore switch the light back on — in low LUX by day or with
+motion at night. This is intended.
 
 To hold every light of an instance at once (the replacement for the old
 "manual control" switch), call `daynight_lighting.hold_all`; drop it again
@@ -425,9 +440,9 @@ integration's calculated values.
 By default (`hold: false`) the lights are only switched on, and the day/night
 automation keeps managing them — this is the right call for a system
 automation. Set `hold: true` for a visitor interaction (a wall button): the
-lights are then held on until the next mode transition, so the day/night
-automation does not undo the visitor's choice — use `release_hold` to hand
-back early.
+lights are then held on until the next mode transition (or the configured
+hold timeout, if set), so the day/night automation does not undo the visitor's
+choice — use `release_hold` to hand back early.
 
 ```yaml
 service: daynight_lighting.turn_on
@@ -435,22 +450,22 @@ target:
   entity_id: switch.bedroom_daynight_lighting
 data:
   brightness_pct: 80
-  # hold: true                # Optional: visitor hold until the phase ends
+  # hold: true                # Optional: visitor hold until the phase ends or the hold timeout
 ```
 
 ### `daynight_lighting.turn_off`
 
 Turn off lights and clean up internal state. By default (`hold: false`) the
 lights are only switched off and the day/night automation keeps managing
-them. Set `hold: true` to hold them off until the next mode transition; use
-`release_hold` to hand back early.
+them. Set `hold: true` to hold them off until the next mode transition (or the
+configured hold timeout, if set); use `release_hold` to hand back early.
 
 ```yaml
 service: daynight_lighting.turn_off
 target:
   entity_id: switch.bedroom_daynight_lighting
 data:
-  hold: true  # Optional: visitor hold until the phase ends
+  hold: true  # Optional: visitor hold until the phase ends or the hold timeout
 ```
 
 ### `daynight_lighting.start_sleep_mode`
@@ -562,7 +577,8 @@ target:
 Hold every light of the instance at once — the bulk replacement for the old
 "manual control" switch. While held, the day/night automation leaves all
 lights of the instance alone. Use `release_hold` to hand back early; the hold
-also clears by itself on the next mode transition.
+also clears by itself on the next mode transition (or the configured hold
+timeout, if set).
 
 ```yaml
 service: daynight_lighting.hold_all
@@ -572,11 +588,14 @@ target:
 
 ### `daynight_lighting.release_hold`
 
-Drop the holds that a `turn_on`/`turn_off` (with `hold: true`) or `hold_all`
-placed on the lights, so the day/night automation takes over again. It also
-resets the brightness dials to their configured starting points, so the room
-returns to the configured state rather than a value a visitor dialled in.
-Normally the hold clears by itself on the next mode transition.
+Drop all holds, detected included, so the day/night automation takes over
+again. This button/service always works, independently of both hold options.
+It also resets the brightness dials to their configured starting points, so
+the room returns to the configured state rather than a value a visitor dialled
+in. Timeout expiry follows the same release path but does not reset the dials.
+Service holds normally clear by themselves on the next mode transition (or the
+configured hold timeout, if set); detected holds survive a plain mode change
+by default.
 
 Releasing at night restores what the next tick would do, and with a motion
 sensor that is motion-driven: with nobody moving, the released lights are
@@ -611,6 +630,8 @@ target:
 | **Additional lights** | Extra light entities beyond area discovery |
 | **Additional light sensor(s)** | LUX sensor(s) for day mode (multiple allowed, averaged) |
 | **Additional motion/presence sensor(s)** | Binary sensor(s) for night mode (multiple allowed, OR logic) |
+| **Detected holds survive phase changes** (`detected_hold_survives_phase`) | Default On. Off = a detected hold also ends at the mode change; sleep and wake-up always end every hold |
+| **Hold timeout (minutes, 0 = never)** (`hold_timeout_min`) | Default 0 = never. >0: every hold expires this many minutes after its last set/refresh; checked once a minute |
 
 ### Area Discovery Section
 
@@ -788,7 +809,7 @@ data:
 
 **Cause:** The integration detected an external change (scene, manual adjustment, other automation) and put the light on hold.
 
-**To prevent:** Turn OFF Control Brightness or Control Color for attributes you want to manage manually. To drop the hold, call `daynight_lighting.release_hold`.
+**To prevent:** Turn OFF Control Brightness or Control Color for attributes you want to manage manually. To drop the hold, call `daynight_lighting.release_hold`. To bound holds automatically, set *Hold timeout* > 0.
 
 ### 11. A Wall Button Does Nothing During the Day
 

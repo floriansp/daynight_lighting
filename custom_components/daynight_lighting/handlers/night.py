@@ -6,7 +6,7 @@ Handles night mode: motion-based on/off with fixed brightness.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.light import ATTR_BRIGHTNESS_PCT, ATTR_COLOR_TEMP_KELVIN
 from homeassistant.const import STATE_ON
@@ -29,10 +29,9 @@ from ..manual_control import (
 )
 from ..protocols import ColorProvider
 from ..state_controller import HOLD_REASON_DETECTED
+from .base import BaseModeHandler
 
 if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
-
     from ..action_scheduler import ActionScheduler
     from ..motion import MotionController
 
@@ -41,7 +40,7 @@ __all__ = ["NightModeHandler"]
 _LOGGER = logging.getLogger(__name__)
 
 
-class NightModeHandler:
+class NightModeHandler(BaseModeHandler):
     """Handles night mode: motion-based on/off, fixed brightness."""
 
     def __init__(
@@ -61,7 +60,7 @@ class NightModeHandler:
             action_scheduler: Scheduler for delayed actions
             circadian: Color provider for night color temperature
         """
-        self._shared = shared
+        super().__init__(shared)
         self._config = config
         self._motion = motion
         self._action_scheduler = action_scheduler
@@ -73,35 +72,6 @@ class NightModeHandler:
         # instead of holding the lights as an external scene (see
         # _apply_motion_on).
         self._reapply_instead_of_hold = False
-
-    # Convenience properties for shared dependencies
-    @property
-    def _hass(self) -> HomeAssistant:
-        return self._shared.hass
-
-    @property
-    def _instance_name(self) -> str:
-        return self._shared.instance_name
-
-    @property
-    def _lights(self):
-        return self._shared.lights
-
-    @property
-    def _state_ctrl(self):
-        return self._shared.state_ctrl
-
-    @property
-    def _is_control_brightness_on(self) -> Callable[[], bool]:
-        return self._shared.is_control_brightness_on
-
-    @property
-    def _is_control_color_on(self) -> Callable[[], bool]:
-        return self._shared.is_control_color_on
-
-    @property
-    def _get_transition(self) -> Callable[[str], int]:
-        return self._shared.get_transition
 
     def tick(self) -> None:
         """Night-mode per-minute tick.
@@ -170,7 +140,7 @@ class NightModeHandler:
 
     def exit(self, next_mode: str) -> None:
         """Called when exiting night mode."""
-        self._cancel_off_timer()
+        self.cancel_off_timer()
 
     def calculate_expected_state(self) -> ExpectedState:
         """Calculate expected light state based on current conditions.
@@ -269,6 +239,32 @@ class NightModeHandler:
         """Night mode: motion/presence detected -> turn on lights."""
         self._apply_motion_on(reapply_diverged=False)
 
+    def handle_release(self, released: list[str]) -> str:
+        """Restore a motion-lit night after a hold release; returns the branch.
+
+        ``night-motion``
+            Motion now: the released lights are handed back to us and
+            re-applied to the night target.
+        ``night-off``
+            No motion — the normal case after the television goes off: the
+            off timer's selection is switched off.
+        ``night-adopt``
+            ... and it selected nothing, so nothing is commanded and the
+            caller adopts the current state.
+        """
+        if self._motion.has_motion_now():
+            # Hand the released lights back to us *before* applying. A light we
+            # do not control makes the motion apply abort the whole room as
+            # "somebody else owns this" and command nothing, which leaves the
+            # old expectation in place — the scene's values then read as a
+            # fresh intervention minutes later.
+            self._state_ctrl.mark_controlled(released)
+            self.reapply_after_release()
+            return "night-motion"
+        if self.turn_off_after_release():
+            return "night-off"
+        return "night-adopt"
+
     def reapply_after_release(self) -> None:
         """Take the lights back to the night target after a hold release.
 
@@ -287,7 +283,7 @@ class NightModeHandler:
         diverges from the night target is re-applied instead of held, because
         the hold has already been dropped by the user.
         """
-        self._cancel_off_timer()
+        self.cancel_off_timer()
 
         # The first motion after entering night re-applies the lights that
         # still carry the previous mode's values instead of holding them as
@@ -541,9 +537,23 @@ class NightModeHandler:
             lights, lambda: self._off_timer_result()
         )
 
-    def _cancel_off_timer(self) -> None:
+    def cancel_off_timer(self) -> None:
         """Cancel any scheduled motion-off turn_off."""
         self._motion.cancel_night_motion_off_timer()
+
+    def turn_off_after_release(self) -> bool:
+        """Switch off what the off timer would switch off, right now.
+
+        The release of a hold in a motion-lit night without motion: the room
+        goes where the off timer would have taken it. Returns True when it
+        switched lights off, False when the timer's selection was empty (motion
+        still active, or nothing left that is not held).
+        """
+        lights_to_off, _ = self._off_timer_result()
+        if not lights_to_off:
+            return False
+        self._turn_off_lights(lights_to_off)
+        return True
 
     def _off_timer_result(self) -> tuple[list[str], str | None]:
         """Called when the motion-off timer fires."""
@@ -641,7 +651,3 @@ class NightModeHandler:
             self._instance_name,
             fallback,
         )
-
-    def _turn_off_lights(self, lights: list[str]) -> None:
-        """Turn off lights with transition."""
-        self._shared.light_applier.turn_off(lights, transition="tick")

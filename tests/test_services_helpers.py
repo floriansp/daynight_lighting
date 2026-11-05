@@ -664,8 +664,8 @@ class TestAsyncCalibrateLux:
         hass.config_entries.async_get_entry.return_value = config_entry
 
         main_switch = MagicMock()
-        main_switch._illuminance.get_light_sensor_entity.return_value = "sensor.lux"
-        main_switch._illuminance.get_lux_raw.side_effect = [120.0, 20.0]
+        main_switch.has_lux_sensor.return_value = True
+        main_switch.read_raw_lux.side_effect = [120.0, 20.0]
         main_switch.prepare_lights_applied_by_service.side_effect = (
             lambda lights, *, on, brightness_pct=None: order.append(
                 ("prepare", on, brightness_pct)
@@ -690,4 +690,4 @@ class TestAsyncCalibrateLux:
             ("prepare", False, None),
             ("call", "turn_off", None),
         ]
-        main_switch._state_ctrl.set_lux_calibration.assert_called_once_with(100.0)
+        main_switch.store_lux_calibration.assert_called_once_with(100.0)

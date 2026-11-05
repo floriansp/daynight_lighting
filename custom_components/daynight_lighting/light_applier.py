@@ -15,6 +15,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+from homeassistant.components.light import ATTR_BRIGHTNESS_PCT
+from homeassistant.const import STATE_ON
+
 from .manual_control import ExpectedState
 
 if TYPE_CHECKING:
@@ -102,6 +105,40 @@ class LightApplier:
             self._state_ctrl.set_expected_state(lid, on=False)
         self._notify(ExpectedState(on=False))
         self._mark_applied_now(lights)
+
+    def step_brightness(self, lights: list[str], step: int, *, floor: int) -> None:
+        """Move each light by *step* percent, never below *floor*.
+
+        Home Assistant's own ``brightness_step_pct`` walks a light down past
+        zero, which a wall button must not be able to do.
+
+        Goes through :meth:`turn_on` rather than calling ``light.turn_on``
+        directly: that records the values as ours, so the step we just made is
+        not read back as somebody else having been at the lights.
+        """
+        for light in lights:
+            current = self._brightness_pct(light)
+            if current is None:
+                if step <= 0:
+                    continue  # an off light stays off
+                current = 0
+            target = max(floor, min(100, current + step))
+            self.turn_on(
+                [light],
+                {"entity_id": light, ATTR_BRIGHTNESS_PCT: target},
+                transition="tick",
+                brightness_pct=target,
+            )
+
+    def _brightness_pct(self, light: str) -> int | None:
+        """Brightness of *light* in percent, None if it is off or unknown."""
+        state = self._hass.states.get(light)
+        if state is None or state.state != STATE_ON:
+            return None
+        raw = state.attributes.get("brightness")
+        if raw is None:
+            return None
+        return max(1, round(int(raw) / 255 * 100))
 
     def _notify(self, applied: ExpectedState) -> None:
         """Report what we commanded; observers must never break switching."""

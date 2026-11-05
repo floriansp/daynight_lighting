@@ -6,7 +6,7 @@ Handles wake-up mode: gradual brightening over time.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from datetime import datetime, timedelta
 
@@ -19,10 +19,9 @@ from ..context import SharedHandlerDeps
 from ..domain.brightness import ramp_value
 from ..manual_control import ExpectedState
 from ..protocols import ColorProvider
+from .base import BaseModeHandler
 
 if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
-
     from ..illuminance import IlluminanceReader
 
 __all__ = ["WakeUpModeHandler"]
@@ -30,7 +29,7 @@ __all__ = ["WakeUpModeHandler"]
 _LOGGER = logging.getLogger(__name__)
 
 
-class WakeUpModeHandler:
+class WakeUpModeHandler(BaseModeHandler):
     """Handles wake-up mode: gradual brightening over time."""
 
     def __init__(
@@ -54,7 +53,7 @@ class WakeUpModeHandler:
             day_mode_config: Day mode config for target brightness
             night_mode_config: Night mode config for target brightness
         """
-        self._shared = shared
+        super().__init__(shared)
         self._config = config
         self._illuminance = illuminance
         self._schedule = schedule
@@ -69,35 +68,6 @@ class WakeUpModeHandler:
         self._runtime_start_brightness: int | None = None
         self._runtime_end_brightness: int | None = None
         self._runtime_end_kelvin: int | None = None
-
-    # Convenience properties for shared dependencies
-    @property
-    def _hass(self) -> HomeAssistant:
-        return self._shared.hass
-
-    @property
-    def _instance_name(self) -> str:
-        return self._shared.instance_name
-
-    @property
-    def _lights(self):
-        return self._shared.lights
-
-    @property
-    def _state_ctrl(self):
-        return self._shared.state_ctrl
-
-    @property
-    def _is_control_brightness_on(self) -> Callable[[], bool]:
-        return self._shared.is_control_brightness_on
-
-    @property
-    def _is_control_color_on(self) -> Callable[[], bool]:
-        return self._shared.is_control_color_on
-
-    @property
-    def _get_transition(self) -> Callable[[str], int]:
-        return self._shared.get_transition
 
     def tick(self) -> None:
         """Wake-up mode tick: gradual brightness ramp."""
@@ -456,15 +426,3 @@ class WakeUpModeHandler:
             self._instance_name,
         )
 
-    def is_wakeup_block_active(self) -> bool:
-        """Whether the wake-up block (turn_off interrupt) is currently active."""
-        return self._wakeup_block_active
-
-    def clear_wakeup_block(self) -> None:
-        """Clear the wake-up block (e.g., on release or day mode)."""
-        if self._wakeup_block_active:
-            self._wakeup_block_active = False
-            _LOGGER.info(
-                "[%s] Wake-up Mode: Block cleared",
-                self._instance_name,
-            )

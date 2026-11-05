@@ -349,3 +349,60 @@ class TestLuxCalibration:
 
         reader.set_lux_calibration(123.45)
         assert reader.get_lux_calibration() == 123.45
+
+
+def test_repeated_reads_of_one_measurement_do_not_skew_smoothing(fake_hass):
+    """Observers and the handler share a mean over measurements, not calls."""
+    reader = _make_reader(fake_hass, light_sensor="sensor.lux")
+    fake_hass.states.set("sensor.lux", FakeState(state="100"))
+    assert reader.get_lux() == reader.get_lux() == 100
+    fake_hass.states.set("sensor.lux", FakeState(state="200"))
+    assert reader.get_lux() == reader.get_lux() == 150
+
+
+def test_tick_without_new_measurement_keeps_the_average(fake_hass):
+    """Minute ticks must not turn stale measurements into brightness changes."""
+    reader = _make_reader(fake_hass, light_sensor="sensor.lux")
+    for value in (100, 200, 300):
+        fake_hass.states.set("sensor.lux", FakeState(state=str(value)))
+        reader.get_lux()
+    for _ in range(10):
+        assert reader.get_lux() == 200
+
+
+@patch("custom_components.daynight_lighting.illuminance.datetime")
+def test_threshold_sized_reversals_are_not_flapping(clock, fake_hass):
+    """The observed small Living-room reversals are not a feedback swing."""
+    reader = _make_reader(fake_hass)
+    base = datetime(2026, 11, 4, 10, 4, 31)
+    for seconds, pct in zip((0, 30, 60, 90, 120, 150, 195, 225),
+                            (52, 49, 52, 48, 45, 31, 16, 20)):
+        clock.now.return_value = base + timedelta(seconds=seconds)
+        reader.record_brightness_applied(pct)
+    assert reader.should_apply_brightness(50)
+
+
+@patch("custom_components.daynight_lighting.illuminance.datetime")
+def test_tightest_gain_bound_rules_out_feedback(clock, fake_hass):
+    """One low upper bound rules out feedback, even among unknown/high bounds."""
+    reader = _make_reader(fake_hass)
+    base = datetime(2026, 11, 4, 10, 13, 16)
+    for i, (pct, gain) in enumerate(zip(
+        (50, 60, 55, 65, 58), (None, 2, 0.5, 3, None)
+    )):
+        clock.now.return_value = base + timedelta(seconds=30 * i)
+        reader.record_brightness_applied(pct, gain_bound=gain)
+    assert reader.should_apply_brightness(70)
+
+
+def test_compensation_is_sampled_once_per_measurement(fake_hass):
+    """Changing output cannot retroactively re-compensate an old reading."""
+    reader = _make_reader(fake_hass, light_sensor="sensor.lux")
+    reader.set_lux_calibration(100)
+    reader.record_brightness_applied(50)
+    fake_hass.states.set("sensor.lux", FakeState(state="150"))
+    assert reader.get_lux() == 100
+    reader.record_brightness_applied(60)
+    assert reader.get_lux() == 100
+    fake_hass.states.set("sensor.lux", FakeState(state="150"))
+    assert reader.get_lux() == 95  # new State, same numeric reading

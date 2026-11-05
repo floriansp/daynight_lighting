@@ -274,15 +274,15 @@ class TestResetOnEnteringTheNight:
         dial = _make_dial(fake_hass)
         fake_hass.data[DOMAIN]["test_entry"]["night_brightness_number"] = dial
 
-        assert switch._get_night_brightness() is None
+        assert switch._dials.dialled_in_night() is None
         dial.set_dialled_in(15)
-        assert switch._get_night_brightness() == 15
+        assert switch._dials.dialled_in_night() == 15
 
     def test_works_without_the_dial(self, fake_hass, fake_store):
         """A removed or disabled number entity must not break anything."""
         switch, *_ = _make_switch_with_mocks(fake_hass, fake_store)
-        assert switch._get_night_brightness() is None
-        switch._reset_night_brightness_dial()
+        assert switch._dials.dialled_in_night() is None
+        switch._dials.reset_all()
 
 
 class TestConfigurationWins:

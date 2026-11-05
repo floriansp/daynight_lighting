@@ -25,6 +25,8 @@ except ImportError:
     er = None  # type: ignore[misc]
 
 
+MOTION_DEVICE_CLASSES = ("motion", "presence", "occupancy")
+
 # Motion sensor keywords to check in entity_id
 MOTION_SENSOR_KEYWORDS = [
     "motion",
@@ -155,6 +157,36 @@ def _is_own_entity(entity) -> bool:
     return getattr(entity, "platform", None) == OWN_PLATFORM
 
 
+def _effective_device_class(entity) -> str | None:
+    """Respect the user's Show as override before the integration default."""
+    return entity.device_class or entity.original_device_class
+
+
+def _is_eligible_entity(entity) -> bool:
+    """Exclude disabled entries and our own feedback-producing mirrors."""
+    return not _is_own_entity(entity) and not getattr(entity, "disabled_by", None)
+
+
+def _entity_and_device_registries(hass: HomeAssistant):
+    """Both registries, None while they are not available.
+
+    Discovery must never break the instance, so a registry that cannot be read
+    means "nothing discovered". The reason is logged, because an empty result
+    is otherwise indistinguishable from an area that really has no entities.
+    """
+    if er is None or dr is None:
+        return None
+    try:
+        entity_reg = er.async_get(hass)
+        device_reg = dr.async_get(hass)
+    except Exception:  # noqa: BLE001 - discovery must not break the instance
+        _LOGGER.debug("Entity/device registry unavailable", exc_info=True)
+        return None
+    if entity_reg is None or device_reg is None:
+        return None
+    return entity_reg, device_reg
+
+
 def get_lights_in_area(hass: HomeAssistant, area_id: str, instance_name: str = "Area Discovery") -> list[str]:
     """Get all light entities in a specific area.
 
@@ -166,16 +198,10 @@ def get_lights_in_area(hass: HomeAssistant, area_id: str, instance_name: str = "
     Returns:
         List of light entity IDs in the area, sorted alphabetically
     """
-    if not area_id or er is None or dr is None:
+    registries = _entity_and_device_registries(hass) if area_id else None
+    if registries is None:
         return []
-
-    try:
-        entity_reg = er.async_get(hass)
-        device_reg = dr.async_get(hass)
-        if entity_reg is None or device_reg is None:
-            return []
-    except Exception:
-        return []
+    entity_reg, device_reg = registries
 
     lights: list[str] = []
 
@@ -186,7 +212,7 @@ def get_lights_in_area(hass: HomeAssistant, area_id: str, instance_name: str = "
             continue
 
         # Never adopt our own mirror entities (see _is_own_entity).
-        if _is_own_entity(entity):
+        if not _is_eligible_entity(entity):
             continue
 
         # Check domain
@@ -221,8 +247,8 @@ def get_motion_sensors_in_area(hass: HomeAssistant, area_id: str, instance_name:
 
     Detects sensors by:
     1. device_class: motion (standard motion sensors)
-    2. device_class: presence (presence sensors like mmWave)
-    3. Entity ID containing motion/presence keywords (fallback)
+    2. device_class: presence or occupancy (e.g. mmWave)
+    3. Entity ID keywords, only when no device class exists
 
     Args:
         hass: Home Assistant instance
@@ -232,16 +258,10 @@ def get_motion_sensors_in_area(hass: HomeAssistant, area_id: str, instance_name:
     Returns:
         List of motion/presence sensor entity IDs in the area, sorted alphabetically
     """
-    if not area_id or er is None or dr is None:
+    registries = _entity_and_device_registries(hass) if area_id else None
+    if registries is None:
         return []
-
-    try:
-        entity_reg = er.async_get(hass)
-        device_reg = dr.async_get(hass)
-        if entity_reg is None or device_reg is None:
-            return []
-    except Exception:
-        return []
+    entity_reg, device_reg = registries
 
     sensors: set[str] = set()
 
@@ -252,7 +272,7 @@ def get_motion_sensors_in_area(hass: HomeAssistant, area_id: str, instance_name:
             continue
 
         # Never adopt our own mirror entities (see _is_own_entity).
-        if _is_own_entity(entity):
+        if not _is_eligible_entity(entity):
             continue
 
         # Check domain
@@ -260,16 +280,14 @@ def get_motion_sensors_in_area(hass: HomeAssistant, area_id: str, instance_name:
             continue
 
         # Check device class from registry
-        entity_device_class = getattr(
-            entity, "original_device_class", None
-        ) or getattr(entity, "device_class", None)
+        entity_device_class = _effective_device_class(entity)
 
-        if entity_device_class in ("motion", "presence"):
+        if entity_device_class in MOTION_DEVICE_CLASSES:
             sensors.add(entity.entity_id)
             continue
 
         # Fallback: check entity_id patterns
-        if _is_motion_sensor_by_entity_id(entity.entity_id):
+        if entity_device_class is None and _is_motion_sensor_by_entity_id(entity.entity_id):
             sensors.add(entity.entity_id)
 
     result = sorted(sensors)
@@ -288,7 +306,7 @@ def get_illuminance_sensors_in_area(hass: HomeAssistant, area_id: str, instance_
 
     Detects sensors by:
     1. device_class: illuminance
-    2. Entity ID containing illuminance/illumination/lux keywords (fallback)
+    2. Entity ID keywords, only when no device class exists
 
     Args:
         hass: Home Assistant instance
@@ -298,16 +316,10 @@ def get_illuminance_sensors_in_area(hass: HomeAssistant, area_id: str, instance_
     Returns:
         List of illuminance sensor entity IDs in the area, sorted alphabetically
     """
-    if not area_id or er is None or dr is None:
+    registries = _entity_and_device_registries(hass) if area_id else None
+    if registries is None:
         return []
-
-    try:
-        entity_reg = er.async_get(hass)
-        device_reg = dr.async_get(hass)
-        if entity_reg is None or device_reg is None:
-            return []
-    except Exception:
-        return []
+    entity_reg, device_reg = registries
 
     sensors: set[str] = set()
 
@@ -318,7 +330,7 @@ def get_illuminance_sensors_in_area(hass: HomeAssistant, area_id: str, instance_
             continue
 
         # Never adopt our own mirror entities (see _is_own_entity).
-        if _is_own_entity(entity):
+        if not _is_eligible_entity(entity):
             continue
 
         # Check domain
@@ -326,16 +338,14 @@ def get_illuminance_sensors_in_area(hass: HomeAssistant, area_id: str, instance_
             continue
 
         # Check device class from registry
-        entity_device_class = getattr(
-            entity, "original_device_class", None
-        ) or getattr(entity, "device_class", None)
+        entity_device_class = _effective_device_class(entity)
 
         if entity_device_class == "illuminance":
             sensors.add(entity.entity_id)
             continue
 
         # Fallback: check entity_id patterns
-        if _is_illuminance_sensor_by_entity_id(entity.entity_id):
+        if entity_device_class is None and _is_illuminance_sensor_by_entity_id(entity.entity_id):
             sensors.add(entity.entity_id)
 
     result = sorted(sensors)
@@ -366,9 +376,10 @@ def get_area_name(hass: HomeAssistant, area_id: str) -> str | None:
         area_reg = ar.async_get(hass)
         if area_reg is None:
             return None
-        area = area_reg.async_get(area_id)
+        area = area_reg.async_get_area(area_id)
         return area.name if area else None
-    except Exception:
+    except Exception:  # noqa: BLE001 - a name is cosmetic, never worth failing for
+        _LOGGER.debug("Area registry unavailable", exc_info=True)
         return None
 
 

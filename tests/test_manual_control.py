@@ -15,6 +15,7 @@ from custom_components.daynight_lighting.manual_control import (
     ManualControlDetector,
     mired_to_kelvin,
     compare_light_to_target,
+    reported_kelvin,
 )
 
 from tests.conftest import FakeHass, FakeState
@@ -799,3 +800,16 @@ class TestModeSpecificTolerances:
     def test_unknown_mode_defaults_to_night(self):
         tol = ManualControlDetector.get_tolerances_for_mode("unknown", has_lux_sensor=False)
         assert tol == (5, 200)  # Night mode defaults
+
+
+class TestReportedKelvin:
+    """What colour temperature a light reports, whichever unit it uses."""
+
+    def test_prefers_the_kelvin_attribute(self):
+        assert reported_kelvin({"color_temp_kelvin": 2700, "color_temp": 200}) == 2700
+
+    def test_falls_back_to_mired(self):
+        assert reported_kelvin({"color_temp": 400}) == 2500
+
+    def test_none_when_the_light_reports_no_colour_temperature(self):
+        assert reported_kelvin({"brightness": 128}) is None

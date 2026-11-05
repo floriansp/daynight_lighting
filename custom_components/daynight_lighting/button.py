@@ -19,7 +19,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_INSTANCE_NAME, DOMAIN, SIGNAL_MONITOR_UPDATE
-from .instance_data import KEY_MAIN_SWITCH, instance_entity
+from .instance_data import instance_controller
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class DayNightResetBrightnessButton(ButtonEntity):
     @property
     def _main_switch(self) -> Any | None:
         """Return the main switch of this instance, None before setup."""
-        return instance_entity(self.hass, self._config_entry.entry_id, KEY_MAIN_SWITCH)
+        return instance_controller(self.hass, self._config_entry.entry_id)
 
     @property
     def available(self) -> bool:
@@ -125,7 +125,7 @@ class DayNightReleaseHoldButton(ButtonEntity):
     @property
     def _main_switch(self) -> Any | None:
         """Return the main switch of this instance, None before setup."""
-        return instance_entity(self.hass, self._config_entry.entry_id, KEY_MAIN_SWITCH)
+        return instance_controller(self.hass, self._config_entry.entry_id)
 
     @property
     def available(self) -> bool:

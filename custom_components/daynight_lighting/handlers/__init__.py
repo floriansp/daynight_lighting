@@ -15,11 +15,13 @@ The handlers are split into separate modules for maintainability:
 from .base import ModeHandler, brightness_to_pct, lux_to_brightness_pct
 from .day import DayModeHandler
 from .night import NightModeHandler
+from .registry import ModeHandlers
 from .sleep import SleepModeHandler
 from .wakeup import WakeUpModeHandler
 
 __all__ = [
     "ModeHandler",
+    "ModeHandlers",
     "DayModeHandler",
     "NightModeHandler",
     "SleepModeHandler",

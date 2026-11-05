@@ -8,6 +8,7 @@ maintainable.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING, Callable
 
 from .light_applier import LightApplier
@@ -78,17 +79,13 @@ class SharedHandlerDeps:
             return lights
         return [lid for lid in lights if lid not in held]
 
-    def all_held(self, lights: list[str]) -> bool:
-        """True when every light in *lights* is excluded (held).
-
-        Shortcut for logging; the actual filtering is done by
-        :meth:`exclude_held`.
-        """
-        return bool(lights) and not self.exclude_held(lights)
-
-    @property
+    @cached_property
     def light_applier(self) -> LightApplier:
-        """Applier that switches lights and keeps the tracked state in sync."""
+        """Applier that switches lights and keeps the tracked state in sync.
+
+        Built once per deps instance. ``cached_property`` stores into the
+        instance ``__dict__`` directly, so it works on a frozen dataclass.
+        """
         return LightApplier(
             self.hass,
             self.state_ctrl,
@@ -99,18 +96,3 @@ class SharedHandlerDeps:
         )
 
 
-@dataclass(frozen=True)
-class ControlContext:
-    """Context for control operations.
-
-    Groups the core context needed for creating components and controllers.
-
-    Attributes:
-        hass: Home Assistant instance
-        config_entry_id: Configuration entry ID for state storage
-        instance_name: Name of this DayNight instance
-    """
-
-    hass: HomeAssistant
-    config_entry_id: str
-    instance_name: str

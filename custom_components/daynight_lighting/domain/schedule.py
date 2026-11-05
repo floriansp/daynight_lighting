@@ -89,65 +89,6 @@ def is_in_time_window(
         return current >= start or current < end
 
 
-def calculate_progress_ratio(
-    current_time: dt_time,
-    window_start: dt_time,
-    window_end: dt_time,
-) -> float:
-    """Calculate progress (0.0-1.0) through a time window.
-
-    Used for gradual transitions like sleep mode dimming or
-    wake-up mode brightening.
-
-    This is a pure function with no side effects.
-
-    Args:
-        current_time: Current time within the window
-        window_start: Start of the transition window
-        window_end: End of the transition window
-
-    Returns:
-        Progress ratio (0.0 at start, 1.0 at end, clamped to [0, 1])
-
-    Examples:
-        >>> # Halfway through
-        >>> calculate_progress_ratio(dt_time(14, 0), dt_time(12, 0), dt_time(16, 0))
-        0.5
-
-        >>> # At start
-        >>> calculate_progress_ratio(dt_time(12, 0), dt_time(12, 0), dt_time(16, 0))
-        0.0
-
-        >>> # Window crossing midnight (at 00:30 of 23:00-01:00 window)
-        >>> calculate_progress_ratio(dt_time(0, 30), dt_time(23, 0), dt_time(1, 0))
-        0.25
-
-        >>> # Clamped to 1.0 if past end
-        >>> calculate_progress_ratio(dt_time(17, 0), dt_time(12, 0), dt_time(16, 0))
-        1.0
-    """
-    current = time_to_minutes(current_time)
-    start = time_to_minutes(window_start)
-    end = time_to_minutes(window_end)
-
-    # Handle wrap case (window crosses midnight)
-    if start > end:
-        # Add 24 hours to times after midnight for calculation
-        if current < end:
-            current += 1440  # Add 24 hours in minutes
-        end += 1440
-
-    # Calculate duration and progress
-    duration = end - start
-    elapsed = current - start
-
-    if duration <= 0:
-        return 1.0  # Avoid division by zero
-
-    progress = elapsed / duration
-    return max(0.0, min(1.0, progress))
-
-
 def calculate_time_after(
     start_time: dt_time,
     duration_minutes: int,

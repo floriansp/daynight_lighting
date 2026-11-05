@@ -93,3 +93,28 @@ def ramp_value(start: int, end: int, progress: float) -> int:
         2200
     """
     return int(start + (end - start) * progress)
+
+
+def feedback_gain_bound(
+    raw_lux: float | None,
+    brightness_pct: int | None,
+    lux_on: float,
+    lux_off: float,
+    day_min: int,
+    day_max: int,
+    lamp_lux_at_100: float | None = None,
+) -> float | None:
+    """Bound lamp-to-sensor feedback gain using non-negative ambient light.
+
+    Use the brightness present during the measurement, not the next target.
+    Unknown inputs retain conservative oscillation protection.
+    """
+    if raw_lux is None or brightness_pct is None or brightness_pct <= 0:
+        return None
+    if lux_off <= lux_on:
+        return None
+    contribution = (
+        lamp_lux_at_100 / 100
+        if lamp_lux_at_100 is not None else raw_lux / brightness_pct
+    )
+    return contribution * abs(day_max - day_min) / (lux_off - lux_on)

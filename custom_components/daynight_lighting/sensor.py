@@ -35,7 +35,7 @@ from .const import (
     MODE_WAKEUP,
     SIGNAL_MONITOR_UPDATE,
 )
-from .instance_data import KEY_MAIN_SWITCH, instance_entity
+from .instance_data import instance_controller
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class _DayNightMonitorSensor(SensorEntity):
     @property
     def _main_switch(self) -> Any | None:
         """Return the main switch of this instance, None before setup."""
-        return instance_entity(self.hass, self._config_entry.entry_id, KEY_MAIN_SWITCH)
+        return instance_controller(self.hass, self._config_entry.entry_id)
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to this instance's monitor signal."""

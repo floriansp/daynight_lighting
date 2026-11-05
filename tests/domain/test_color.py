@@ -10,8 +10,6 @@ import pytest
 
 from custom_components.daynight_lighting.domain.color import (
     calculate_kelvin_from_elevation,
-    clamp_kelvin,
-    mix_kelvin,
     DEFAULT_CIRCADIAN_ELEVATION_MIN,
     DEFAULT_CIRCADIAN_ELEVATION_MAX,
 )
@@ -173,109 +171,88 @@ class TestCalculateKelvinFromElevation:
         assert result.kelvin == 2850
         assert result.source == "circadian"
 
+    def test_midpoint_elevation_returns_midpoint_kelvin(self):
+        """Elevation at midpoint returns midpoint Kelvin."""
+        # Midpoint between -20 and 60 is 20
+        result = calculate_kelvin_from_elevation(
+            elevation=20,
+            min_kelvin=2700,
+            max_kelvin=6500,
+        )
+        # t = (20 - (-20)) / (60 - (-20)) = 40/80 = 0.5
+        # kelvin = 2700 + (6500-2700) * 0.5 = 2700 + 1900 = 4600
+        assert result.kelvin == 4600
+        assert result.source == "circadian"
 
-class TestClampKelvin:
-    """Tests for clamp_kelvin utility function."""
+    def test_high_elevation_interpolation(self):
+        """High elevation (approaching noon)."""
+        result = calculate_kelvin_from_elevation(
+            elevation=50,
+            min_kelvin=2700,
+            max_kelvin=6500,
+        )
+        # t = (50 - (-20)) / 80 = 70/80 = 0.875
+        # kelvin = 2700 + 3800 * 0.875 = 2700 + 3325 = 6025
+        assert result.kelvin == 6025
 
-    def test_value_within_range_unchanged(self):
-        """Value within [min, max] is returned unchanged."""
-        assert clamp_kelvin(4000, 2700, 6500) == 4000
-        assert clamp_kelvin(2700, 2700, 6500) == 2700  # At min
-        assert clamp_kelvin(6500, 2700, 6500) == 6500  # At max
+    def test_custom_range_midpoint(self):
+        """Custom min/max elevation range works correctly."""
+        result = calculate_kelvin_from_elevation(
+            elevation=45,  # Midpoint of custom range 30-60
+            min_kelvin=2700,
+            max_kelvin=6500,
+            elevation_min=30,
+            elevation_max=60,
+        )
+        # t = (45 - 30) / (60 - 30) = 15/30 = 0.5
+        # kelvin = 2700 + 3800 * 0.5 = 4600
+        assert result.kelvin == 4600
 
-    def test_value_below_min_clamped(self):
-        """Value below minimum is clamped to min."""
-        assert clamp_kelvin(2000, 2700, 6500) == 2700
-        assert clamp_kelvin(1000, 2700, 6500) == 2700
-        assert clamp_kelvin(-1000, 2700, 6500) == 2700
+    def test_inverted_elevation_range_raises_value_error(self):
+        """Inverted elevation min/max raises ValueError."""
+        with pytest.raises(ValueError, match="elevation_min.*must be < elevation_max"):
+            calculate_kelvin_from_elevation(
+                elevation=45,
+                min_kelvin=2700,
+                max_kelvin=6500,
+                elevation_min=60,  # Inverted
+                elevation_max=30,  # Inverted
+            )
 
-    def test_value_above_max_clamped(self):
-        """Value above maximum is clamped to max."""
-        assert clamp_kelvin(7000, 2700, 6500) == 6500
-        assert clamp_kelvin(10000, 2700, 6500) == 6500
+    def test_custom_kelvin_range(self):
+        """Custom min/max Kelvin range works correctly."""
+        result = calculate_kelvin_from_elevation(
+            elevation=20,  # Midpoint
+            min_kelvin=2000,  # Very warm
+            max_kelvin=4000,  # Neutral
+        )
+        # kelvin = 2000 + (4000-2000) * 0.5 = 3000
+        assert result.kelvin == 3000
 
-    def test_custom_range(self):
-        """Custom min/max values are respected."""
-        assert clamp_kelvin(3500, 3000, 4000) == 3500
-        assert clamp_kelvin(2500, 3000, 4000) == 3000  # Below min
-        assert clamp_kelvin(4500, 3000, 4000) == 4000  # Above max
+    def test_narrow_kelvin_range(self):
+        """Narrow Kelvin range for limited hardware support."""
+        result = calculate_kelvin_from_elevation(
+            elevation=-30,  # Below min
+            min_kelvin=2700,
+            max_kelvin=3000,  # Only 300K range
+        )
+        assert result.kelvin == 2700
 
-    def test_reversed_range_still_works(self):
-        """When min > max, function still works (uses max/min)."""
-        # clamp_kelvin uses max(min_kelvin, min(max_kelvin, kelvin))
-        # So with min=6500, max=2700: max(6500, min(2700, 4000)) = max(6500, 2700) = 6500
-        assert clamp_kelvin(4000, 6500, 2700) == 6500
+        result = calculate_kelvin_from_elevation(
+            elevation=70,  # Above max
+            min_kelvin=2700,
+            max_kelvin=3000,
+        )
+        assert result.kelvin == 3000
 
-    def test_same_min_max(self):
-        """When min == max, always returns that value."""
-        assert clamp_kelvin(4000, 3000, 3000) == 3000
-        assert clamp_kelvin(2000, 3000, 3000) == 3000
-        assert clamp_kelvin(5000, 3000, 3000) == 3000
-
-
-class TestMixKelvin:
-    """Tests for mix_kelvin function."""
-
-    def test_ratio_zero_returns_first_kelvin(self):
-        """Ratio 0.0 returns first Kelvin value."""
-        assert mix_kelvin(2700, 6500, 0.0) == 2700
-        assert mix_kelvin(3000, 4000, 0.0) == 3000
-
-    def test_ratio_one_returns_second_kelvin(self):
-        """Ratio 1.0 returns second Kelvin value."""
-        assert mix_kelvin(2700, 6500, 1.0) == 6500
-        assert mix_kelvin(3000, 4000, 1.0) == 4000
-
-    def test_ratio_half_returns_midpoint(self):
-        """Ratio 0.5 returns midpoint."""
-        assert mix_kelvin(2700, 6500, 0.5) == 4600  # (2700+6500)/2 = 4600
-        assert mix_kelvin(3000, 5000, 0.5) == 4000  # (3000+5000)/2 = 4000
-
-    def test_partial_ratio(self):
-        """Partial ratios interpolate correctly."""
-        # 2700 + (6500-2700)*0.25 = 2700 + 3800*0.25 = 2700 + 950 = 3650
-        assert mix_kelvin(2700, 6500, 0.25) == 3650
-
-        # 2700 + (6500-2700)*0.75 = 2700 + 3800*0.75 = 2700 + 2850 = 5550
-        assert mix_kelvin(2700, 6500, 0.75) == 5550
-
-    def test_ratio_clamped_below_zero(self):
-        """Ratio < 0.0 is clamped to 0.0."""
-        assert mix_kelvin(2700, 6500, -0.5) == 2700
-        assert mix_kelvin(2700, 6500, -1.0) == 2700
-
-    def test_ratio_clamped_above_one(self):
-        """Ratio > 1.0 is clamped to 1.0."""
-        assert mix_kelvin(2700, 6500, 1.5) == 6500
-        assert mix_kelvin(2700, 6500, 2.0) == 6500
-
-    def test_rounding_to_nearest_integer(self):
-        """Mixed values are rounded to nearest integer."""
-        # 2700 + (6500-2700)*0.333... = 2700 + 3800*0.333... = 2700 + 1266.66... = 3966.66...
-        assert mix_kelvin(2700, 6500, 1/3) == 3967
-
-        # 2700 + (6500-2700)*0.666... = 2700 + 3800*0.666... = 2700 + 2533.33... = 5233.33...
-        assert mix_kelvin(2700, 6500, 2/3) == 5233
-
-    def test_mixing_with_same_values(self):
-        """Mixing same values returns that value regardless of ratio."""
-        assert mix_kelvin(3000, 3000, 0.0) == 3000
-        assert mix_kelvin(3000, 3000, 0.5) == 3000
-        assert mix_kelvin(3000, 3000, 1.0) == 3000
-        assert mix_kelvin(3000, 3000, 0.3) == 3000
-
-    def test_mixing_extreme_values(self):
-        """Mixing works with extreme Kelvin values."""
-        assert mix_kelvin(1000, 10000, 0.5) == 5500
-        assert mix_kelvin(1000, 2000, 0.3) == 1300  # 1000 + 1000*0.3 = 1300
-
-    def test_decreasing_kelvin_range(self):
-        """Mixing works when kelvin2 < kelvin1 (decreasing range)."""
-        # 6500 + (2700-6500)*0.5 = 6500 - 3800*0.5 = 6500 - 1900 = 4600
-        assert mix_kelvin(6500, 2700, 0.5) == 4600
-
-        # 5000 + (3000-5000)*0.25 = 5000 - 2000*0.25 = 5000 - 500 = 4500
-        assert mix_kelvin(5000, 3000, 0.25) == 4500
+    def test_result_contains_sun_elevation(self):
+        """Result contains the original sun elevation value."""
+        result = calculate_kelvin_from_elevation(
+            elevation=25.5,
+            min_kelvin=2700,
+            max_kelvin=6500,
+        )
+        assert result.sun_elevation == 25.5
 
 
 class TestCalculateKelvinFromElevationValidation:
@@ -318,3 +295,19 @@ class TestCalculateKelvinFromElevationValidation:
                 elevation_min=60.0,
                 elevation_max=-20.0,
             )
+
+
+class TestDefaultConstants:
+    """Tests to verify default constants are reasonable."""
+
+    def test_default_elevation_min_is_negative(self):
+        """Default min elevation should be negative (below horizon)."""
+        assert DEFAULT_CIRCADIAN_ELEVATION_MIN < 0
+
+    def test_default_elevation_max_is_positive(self):
+        """Default max elevation should be positive (above horizon)."""
+        assert DEFAULT_CIRCADIAN_ELEVATION_MAX > 0
+
+    def test_default_range_is_valid(self):
+        """Default elevation range should have min < max."""
+        assert DEFAULT_CIRCADIAN_ELEVATION_MIN < DEFAULT_CIRCADIAN_ELEVATION_MAX

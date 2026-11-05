@@ -107,7 +107,7 @@ class TestMotionSensorChangeInUI:
 
         # Mock dt_util to avoid date() issues in schedule code
         with patch(
-            "custom_components.daynight_lighting.schedule.dt_util"
+            "custom_components.daynight_lighting.mode_schedule.dt_util"
         ) as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 22, 0, 0)
             mock_dt.as_local.return_value = datetime(2026, 6, 15, 22, 0, 0)
@@ -143,7 +143,7 @@ class TestNightStartTimeChangeInUI:
 
         # At 22:00 with night_start=23:00 → day mode (before configured time)
         with patch(
-            "custom_components.daynight_lighting.schedule.dt_util"
+            "custom_components.daynight_lighting.mode_schedule.dt_util"
         ) as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 22, 0, 0)
             assert switch._is_day_mode() is True
@@ -156,7 +156,7 @@ class TestNightStartTimeChangeInUI:
 
         # At 22:00 with night_start=21:00 → night mode (past configured time)
         with patch(
-            "custom_components.daynight_lighting.schedule.dt_util"
+            "custom_components.daynight_lighting.mode_schedule.dt_util"
         ) as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 22, 0, 0)
             assert switch._is_day_mode() is False
@@ -175,7 +175,7 @@ class TestNightStartTimeChangeInUI:
         # Initial: 22:00, night_start=23:00 → day mode
         from custom_components.daynight_lighting.const import MODE_DAY
         with patch(
-            "custom_components.daynight_lighting.schedule.dt_util"
+            "custom_components.daynight_lighting.mode_schedule.dt_util"
         ) as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 22, 0, 0)
             switch.async_options_changed()
@@ -191,7 +191,7 @@ class TestNightStartTimeChangeInUI:
         # Now at 22:00, night_start=21:00 → night mode
         from custom_components.daynight_lighting.const import MODE_NIGHT
         with patch(
-            "custom_components.daynight_lighting.schedule.dt_util"
+            "custom_components.daynight_lighting.mode_schedule.dt_util"
         ) as mock_dt:
             mock_dt.now.return_value = datetime(2026, 6, 15, 22, 0, 0)
             switch.async_options_changed()

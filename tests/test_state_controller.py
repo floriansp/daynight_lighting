@@ -205,6 +205,7 @@ class TestDataToSave:
         assert data == {
             "lights_we_control": [],
             "held_lights": {},
+            "hold_set_at": {},
             "lux_calibration": None,
             "expected_states": {},
         }
@@ -310,3 +311,28 @@ class TestLuxCalibration:
         ctrl2 = _make_controller(fake_hass, fake_store, "Test2")
         await ctrl2.async_load()
         assert ctrl2.get_lux_calibration() == 150.75
+
+
+class TestExpectedTimestamp:
+    """The timestamp tells a caller whether a light was commanded since."""
+
+    def test_none_for_a_light_without_expectation(self, fake_hass, fake_store):
+        ctrl = _make_controller(fake_hass, fake_store)
+        assert ctrl.get_expected_timestamp("light.a") is None
+
+    def test_a_newer_expectation_has_a_newer_timestamp(
+        self, fake_hass, fake_store, monkeypatch
+    ):
+        ctrl = _make_controller(fake_hass, fake_store)
+        clock = iter([100.0, 200.0])
+        monkeypatch.setattr(
+            "custom_components.daynight_lighting.state_controller.time.time",
+            lambda: next(clock),
+        )
+
+        ctrl.set_expected_state("light.a", on=True, brightness_pct=50)
+        first = ctrl.get_expected_timestamp("light.a")
+        ctrl.set_expected_state("light.a", on=True, brightness_pct=50)
+
+        assert first == 100.0
+        assert ctrl.get_expected_timestamp("light.a") == 200.0

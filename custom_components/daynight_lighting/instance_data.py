@@ -14,6 +14,8 @@ from .const import DOMAIN
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+    from .protocols import InstanceController
+
 KEY_MAIN_SWITCH = "main_switch"
 KEY_CONTROL_BRIGHTNESS = "control_brightness_switch"
 KEY_CONTROL_COLOR = "control_color_switch"
@@ -30,6 +32,11 @@ def instance_data(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
 def instance_entity(hass: HomeAssistant, entry_id: str, key: str) -> Any | None:
     """One entity of an instance, None before its platform set it up."""
     return instance_data(hass, entry_id).get(key)
+
+
+def instance_controller(hass: HomeAssistant, entry_id: str) -> InstanceController | None:
+    """The main switch of an instance, typed by what others may ask of it."""
+    return instance_entity(hass, entry_id, KEY_MAIN_SWITCH)
 
 
 def is_entity_on(entity: Any | None, *, default: bool) -> bool:

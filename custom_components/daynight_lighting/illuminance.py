@@ -8,6 +8,10 @@ import logging
 import time
 
 from homeassistant.core import HomeAssistant
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from homeassistant.core import State
 
 from .config import IlluminanceConfig
 from .parsing import calculate_compensated_lux, parse_lux_state
@@ -68,9 +72,11 @@ class IlluminanceReader:
         # LUX smoothing (rolling average)
         self._lux_samples: deque[float] = deque(maxlen=max(1, config.smoothing_samples))
 
+        self._sampled_states: dict[str, State | None] = {}
+
         # Brightness change threshold & flapping detection
         self._last_applied_brightness_pct: int | None = None
-        self._brightness_history: deque[tuple[datetime, int]] = deque(
+        self._brightness_history: deque[tuple[datetime, int, float | None]] = deque(
             maxlen=self.FLAPPING_HISTORY_MAXLEN
         )
         self._flapping_freeze_until: datetime | None = None
@@ -200,11 +206,16 @@ class IlluminanceReader:
         if lux_raw is None:
             return None
 
-        # Apply compensation if calibrated
-        lux_compensated = self._apply_lux_compensation(lux_raw)
-
-        # Add to rolling average buffer
-        self._lux_samples.append(lux_compensated)
+        states = {
+            entity_id: self._hass.states.get(entity_id)
+            for entity_id in self._light_sensor_entity_ids
+        }
+        if not self._lux_samples or any(
+            state is not self._sampled_states.get(entity_id)
+            for entity_id, state in states.items()
+        ):
+            self._lux_samples.append(self._apply_lux_compensation(lux_raw))
+            self._sampled_states = states
 
         # Return average
         return sum(self._lux_samples) / len(self._lux_samples)
@@ -317,16 +328,19 @@ class IlluminanceReader:
         self._last_applied_brightness_pct = None
         self._brightness_history.clear()
 
-    def record_brightness_applied(self, brightness_pct: int) -> None:
+    def record_brightness_applied(
+        self, brightness_pct: int, *, gain_bound: float | None = None
+    ) -> None:
         """Record that *brightness_pct* was successfully applied.
 
         Updates the last applied brightness and checks for flapping
-        (direction oscillation). If flapping is detected, starts a freeze
-        period to prevent further adjustments.
+        (direction oscillation). A gain bound below one rules out lamp
+        feedback; None retains conservative protection. If plausible flapping
+        is detected, starts a freeze period to prevent further adjustments.
         """
         now = datetime.now()
         self._last_applied_brightness_pct = brightness_pct
-        self._brightness_history.append((now, brightness_pct))
+        self._brightness_history.append((now, brightness_pct, gain_bound))
 
         # Flapping detection: check if direction changed 3+ times in the last 5 minutes
         if len(self._brightness_history) >= 4:
@@ -335,35 +349,40 @@ class IlluminanceReader:
     def _check_flapping(self) -> None:
         """Detect oscillation (flapping) in brightness changes.
 
-        If the direction (up/down) changes 3+ times within 5 minutes, we
-        consider it flapping and freeze brightness adjustments for a
-        configurable period.
+        Require three reversals exceeding the damping quantum in five
+        minutes, unless a physical gain bound rules out lamp feedback.
+        Unknown gain preserves conservative protection.
         """
         now = datetime.now()
         recent = [
-            (ts, pct)
-            for ts, pct in self._brightness_history
+            (ts, pct, gain)
+            for ts, pct, gain in self._brightness_history
             if (now - ts).total_seconds() < 300  # 5 minutes
         ]
         if len(recent) < 4:
             return
 
-        # Compute direction changes: +1 for up, -1 for down
-        directions: list[int] = []
-        for i in range(1, len(recent)):
-            prev_pct = recent[i - 1][1]
-            curr_pct = recent[i][1]
-            if curr_pct > prev_pct:
-                directions.append(1)
-            elif curr_pct < prev_pct:
-                directions.append(-1)
+        # A reversal must exceed one damping quantum from the running extreme.
+        threshold = self._config.brightness_change_threshold_pct
+        extreme = recent[0][1]
+        direction = 0
+        changes = 0
+        for _, pct, _ in recent[1:]:
+            delta = pct - extreme
+            if direction == 0:
+                if abs(delta) > threshold:
+                    direction = 1 if delta > 0 else -1
+                    extreme = pct
+            elif delta * direction >= 0:
+                extreme = pct
+            elif abs(delta) > threshold:
+                changes += 1
+                direction *= -1
+                extreme = pct
 
-        # Count direction changes
-        changes = sum(
-            1 for i in range(1, len(directions)) if directions[i] != directions[i - 1]
-        )
-
-        if changes >= 3:
+        bounds = [gain for _, _, gain in recent if gain is not None]
+        plausible_feedback = not bounds or min(bounds) >= 1
+        if changes >= 3 and plausible_feedback:
             freeze_min = self._config.flapping_freeze_min
             self._flapping_freeze_until = now + timedelta(minutes=freeze_min)
             _LOGGER.warning(
@@ -377,6 +396,7 @@ class IlluminanceReader:
     def clear_state(self) -> None:
         """Clear all anti-flapping state (e.g. when integration is turned off or reset)."""
         self._lux_samples.clear()
+        self._sampled_states.clear()
         self._last_applied_brightness_pct = None
         self._brightness_history.clear()
         self._flapping_freeze_until = None

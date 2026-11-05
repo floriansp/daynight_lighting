@@ -14,7 +14,6 @@ from custom_components.daynight_lighting.domain.models import Mode
 from custom_components.daynight_lighting.domain.schedule import (
     time_to_minutes,
     is_in_time_window,
-    calculate_progress_ratio,
     calculate_time_after,
     calculate_time_before,
     ModeDeterminationContext,
@@ -43,6 +42,15 @@ class TestTimeToMinutes:
         assert time_to_minutes(dt_time(0, 1)) == 1
         assert time_to_minutes(dt_time(1, 0)) == 60
         assert time_to_minutes(dt_time(23, 0)) == 1380
+
+    def test_one_pm(self):
+        """13:00 is 780 minutes."""
+        assert time_to_minutes(dt_time(13, 0)) == 780
+
+    def test_arbitrary_time(self):
+        """Arbitrary time converts correctly."""
+        # 14:35 = 14*60 + 35 = 840 + 35 = 875
+        assert time_to_minutes(dt_time(14, 35)) == 875
 
 
 class TestIsInTimeWindow:
@@ -110,89 +118,110 @@ class TestIsInTimeWindow:
         assert is_in_time_window(dt_time(12, 0), window_start, window_end) is True
         assert is_in_time_window(dt_time(5, 0), window_start, window_end) is False
 
+    def test_time_inside_window(self):
+        """Time inside window returns True."""
+        assert is_in_time_window(
+            dt_time(14, 0),
+            dt_time(12, 0),
+            dt_time(16, 0),
+        ) is True
 
-class TestCalculateProgressRatio:
-    """Tests for calculate_progress_ratio function."""
+    def test_time_before_window(self):
+        """Time before window returns False."""
+        assert is_in_time_window(
+            dt_time(10, 0),
+            dt_time(12, 0),
+            dt_time(16, 0),
+        ) is False
 
-    def test_progress_within_same_day_window(self):
-        """Progress calculation for window within same day."""
-        window_start = dt_time(12, 0)
-        window_end = dt_time(16, 0)  # 4-hour window
+    def test_time_after_window(self):
+        """Time after window returns False."""
+        assert is_in_time_window(
+            dt_time(18, 0),
+            dt_time(12, 0),
+            dt_time(16, 0),
+        ) is False
 
-        # At start
-        assert calculate_progress_ratio(dt_time(12, 0), window_start, window_end) == 0.0
+    def test_time_at_window_start(self):
+        """Time at window start is considered inside (inclusive start)."""
+        assert is_in_time_window(
+            dt_time(12, 0),
+            dt_time(12, 0),
+            dt_time(16, 0),
+        ) is True
 
-        # Quarter through (30 minutes into 4-hour window = 0.125)
-        assert calculate_progress_ratio(dt_time(12, 30), window_start, window_end) == 0.125
+    def test_time_at_window_end(self):
+        """Time at window end is considered outside (exclusive end)."""
+        assert is_in_time_window(
+            dt_time(16, 0),
+            dt_time(12, 0),
+            dt_time(16, 0),
+        ) is False
 
-        # Halfway through
-        assert calculate_progress_ratio(dt_time(14, 0), window_start, window_end) == 0.5
+    def test_crossing_midnight_inside_before_midnight(self):
+        """Time inside crossing-midnight window (before midnight)."""
+        # Window 23:00 - 01:00
+        assert is_in_time_window(
+            dt_time(23, 30),
+            dt_time(23, 0),
+            dt_time(1, 0),
+        ) is True
 
-        # Three quarters through
-        assert calculate_progress_ratio(dt_time(15, 0), window_start, window_end) == 0.75
+    def test_crossing_midnight_inside_after_midnight(self):
+        """Time inside crossing-midnight window (after midnight)."""
+        # Window 23:00 - 01:00
+        assert is_in_time_window(
+            dt_time(0, 30),
+            dt_time(23, 0),
+            dt_time(1, 0),
+        ) is True
 
-        # Near end (15:59, 3h59m into 4h = ~0.997)
-        progress = calculate_progress_ratio(dt_time(15, 59), window_start, window_end)
-        assert 0.99 < progress < 1.0
+    def test_crossing_midnight_outside_before_window(self):
+        """Time outside crossing-midnight window (before window starts)."""
+        # Window 23:00 - 01:00
+        assert is_in_time_window(
+            dt_time(22, 0),
+            dt_time(23, 0),
+            dt_time(1, 0),
+        ) is False
 
-    def test_progress_crossing_midnight(self):
-        """Progress calculation for window crossing midnight."""
-        window_start = dt_time(22, 0)  # 10 PM
-        window_end = dt_time(2, 0)     # 2 AM (4-hour window)
+    def test_crossing_midnight_outside_after_window(self):
+        """Time outside crossing-midnight window (after window ends)."""
+        # Window 23:00 - 01:00
+        assert is_in_time_window(
+            dt_time(2, 0),
+            dt_time(23, 0),
+            dt_time(1, 0),
+        ) is False
 
-        # At start
-        assert calculate_progress_ratio(dt_time(22, 0), window_start, window_end) == 0.0
+    def test_crossing_midnight_at_start(self):
+        """Time at crossing-midnight window start (inclusive)."""
+        assert is_in_time_window(
+            dt_time(23, 0),
+            dt_time(23, 0),
+            dt_time(1, 0),
+        ) is True
 
-        # 2 hours after start (midnight)
-        assert calculate_progress_ratio(dt_time(0, 0), window_start, window_end) == 0.5
+    def test_crossing_midnight_at_end(self):
+        """Time at crossing-midnight window end (exclusive)."""
+        assert is_in_time_window(
+            dt_time(1, 0),
+            dt_time(23, 0),
+            dt_time(1, 0),
+        ) is False
 
-        # 3 hours after start (1 AM)
-        assert calculate_progress_ratio(dt_time(1, 0), window_start, window_end) == 0.75
-
-        # Just before end
-        progress = calculate_progress_ratio(dt_time(1, 59), window_start, window_end)
-        assert 0.99 < progress < 1.0
-
-    def test_progress_before_window(self):
-        """Progress before window start returns 0.0."""
-        window_start = dt_time(10, 0)
-        window_end = dt_time(12, 0)
-
-        assert calculate_progress_ratio(dt_time(9, 0), window_start, window_end) == 0.0
-        assert calculate_progress_ratio(dt_time(5, 30), window_start, window_end) == 0.0
-
-    def test_progress_after_window(self):
-        """Progress after window end returns 1.0."""
-        window_start = dt_time(10, 0)
-        window_end = dt_time(12, 0)
-
-        assert calculate_progress_ratio(dt_time(12, 0), window_start, window_end) == 1.0
-        assert calculate_progress_ratio(dt_time(14, 0), window_start, window_end) == 1.0
-        assert calculate_progress_ratio(dt_time(23, 59), window_start, window_end) == 1.0
-
-    def test_zero_duration_window(self):
-        """Window with zero duration returns 1.0."""
-        window_start = dt_time(10, 0)
-        window_end = dt_time(10, 0)  # Zero duration
-
-        assert calculate_progress_ratio(dt_time(10, 0), window_start, window_end) == 1.0
-        assert calculate_progress_ratio(dt_time(9, 0), window_start, window_end) == 1.0
-        assert calculate_progress_ratio(dt_time(11, 0), window_start, window_end) == 1.0
-
-    def test_negative_progress_clamped(self):
-        """Progress < 0.0 is clamped to 0.0."""
-        window_start = dt_time(10, 0)
-        window_end = dt_time(12, 0)
-
-        # Current time before start (negative elapsed)
-        assert calculate_progress_ratio(dt_time(9, 0), window_start, window_end) == 0.0
-
-    def test_progress_greater_than_one_clamped(self):
-        """Progress > 1.0 is clamped to 1.0."""
-        window_start = dt_time(10, 0)
-        window_end = dt_time(12, 0)
-
-        assert calculate_progress_ratio(dt_time(13, 0), window_start, window_end) == 1.0
+    def test_one_minute_window_edges(self):
+        """One-minute window works correctly."""
+        assert is_in_time_window(
+            dt_time(12, 0),
+            dt_time(12, 0),
+            dt_time(12, 1),
+        ) is True
+        assert is_in_time_window(
+            dt_time(12, 1),
+            dt_time(12, 0),
+            dt_time(12, 1),
+        ) is False
 
 
 class TestCalculateTimeAfter:
@@ -244,6 +273,35 @@ class TestCalculateTimeAfter:
         result = calculate_time_after(dt_time(14, 30), -60)
         assert result == dt_time(13, 30)  # 14:30 - 1 hour = 13:30
 
+    def test_add_zero_minutes(self):
+        """Adding 0 minutes returns same time."""
+        assert calculate_time_after(dt_time(12, 0), 0) == dt_time(12, 0)
+
+    def test_add_one_hour(self):
+        """Adding 60 minutes advances by 1 hour."""
+        assert calculate_time_after(dt_time(10, 0), 60) == dt_time(11, 0)
+
+    def test_add_minutes_within_hour(self):
+        """Adding minutes within same hour."""
+        assert calculate_time_after(dt_time(10, 30), 20) == dt_time(10, 50)
+
+    def test_add_crossing_hour(self):
+        """Adding minutes that cross hour boundary."""
+        assert calculate_time_after(dt_time(10, 45), 30) == dt_time(11, 15)
+
+    def test_add_exactly_24_hours(self):
+        """Adding 1440 minutes (24 hours) returns same time."""
+        assert calculate_time_after(dt_time(12, 0), 1440) == dt_time(12, 0)
+
+    def test_add_multiple_hours(self):
+        """Adding multiple hours."""
+        assert calculate_time_after(dt_time(22, 0), 120) == dt_time(0, 0)
+
+    def test_add_large_duration(self):
+        """Adding large duration wraps correctly."""
+        # 20:00 + 600 min (10h) = 06:00 next day
+        assert calculate_time_after(dt_time(20, 0), 600) == dt_time(6, 0)
+
 
 class TestCalculateTimeBefore:
     """Tests for calculate_time_before function."""
@@ -285,6 +343,36 @@ class TestCalculateTimeBefore:
 
         # Large duration
         assert calculate_time_before(dt_time(10, 0), 12345) == dt_time(20, 15)  # 12345 % 1440 = 825, 10:00 - 825min = 20:15
+
+    def test_subtract_zero_minutes(self):
+        """Subtracting 0 minutes returns same time."""
+        assert calculate_time_before(dt_time(12, 0), 0) == dt_time(12, 0)
+
+    def test_subtract_one_hour(self):
+        """Subtracting 60 minutes goes back 1 hour."""
+        assert calculate_time_before(dt_time(11, 0), 60) == dt_time(10, 0)
+
+    def test_subtract_minutes_within_hour(self):
+        """Subtracting minutes within same hour."""
+        assert calculate_time_before(dt_time(10, 50), 20) == dt_time(10, 30)
+
+    def test_subtract_crossing_hour(self):
+        """Subtracting duration that crosses hour boundary."""
+        assert calculate_time_before(dt_time(11, 15), 30) == dt_time(10, 45)
+
+    def test_subtract_crossing_midnight(self):
+        """Subtracting duration that crosses midnight wraps correctly."""
+        # 01:00 - 120 = 23:00 (previous day)
+        assert calculate_time_before(dt_time(1, 0), 120) == dt_time(23, 0)
+
+    def test_subtract_exactly_24_hours(self):
+        """Subtracting 1440 minutes (24 hours) returns same time."""
+        assert calculate_time_before(dt_time(12, 0), 1440) == dt_time(12, 0)
+
+    def test_subtract_large_duration(self):
+        """Subtracting large duration wraps correctly."""
+        # 06:00 - 600 min (10h) = 20:00 previous day
+        assert calculate_time_before(dt_time(6, 0), 600) == dt_time(20, 0)
 
 
 class TestModeDeterminationContext:

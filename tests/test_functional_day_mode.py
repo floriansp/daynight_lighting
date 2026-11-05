@@ -188,3 +188,54 @@ class TestMonitoringRecordsAppliedNotComputed:
         target = switch.get_last_applied_target()
         assert target.kelvin == 3500
         assert target.brightness_pct == 60
+
+
+def test_ambient_cloud_swings_do_not_freeze(make_switch, fake_hass):
+    """Strong ambient swings stay responsive when lamp feedback is impossible.
+
+    Representative Living-room lux extrema (not a full recorded replay), with
+    extra minute/observer reads exercising the same real handler and reader.
+    Repeating the cloud swing produces four hysteresis reversals: without the
+    handler passing the gain bound, the conservative guard would freeze here.
+    """
+    switch, *_ = make_switch(options={
+        "lux_on": 10, "lux_off": 140, "day_min_brightness": 0,
+        "day_max_brightness": 80, "lux_smoothing_samples": 3,
+    }, day_mode=True)
+    handler = switch._get_mode_handler("day")
+    reader = handler._illuminance
+    applied = []
+    lux_extrema = (47, 110, 61, 95, 47, 95)
+    for lux in (extreme for extreme in lux_extrema for _ in range(3)):
+        fake_hass.states.set("sensor.lux", FakeState(state=str(lux)))
+        handler.tick()
+        before = reader.get_lux()
+        handler.calculate_expected_state()
+        handler.tick()  # minute tick, no measurement
+        assert reader.get_lux() == before
+        assert reader._flapping_freeze_until is None
+        applied.append(reader.get_last_applied_brightness())
+    # Each plateau drains the three-measurement smoothing buffer. These
+    # turning points exceed the 3% hysteresis by a wide margin, so gain
+    # plausibility (not smoothing or hysteresis alone) must prevent freezing.
+    assert applied[2::3] == [57, 18, 49, 28, 57, 28]
+    assert max(applied) - min(applied) > 25
+    assert applied[-1] < applied[0]
+
+
+def test_lamp_feedback_loop_still_freezes(make_switch, fake_hass):
+    """A sensor illuminated by its own lamps still trips the safety guard."""
+    switch, *_ = make_switch(options={
+        "lux_on": 3, "lux_off": 11, "day_min_brightness": 0,
+        "day_max_brightness": 35, "lux_smoothing_samples": 1,
+    }, day_mode=True)
+    handler = switch._get_mode_handler("day")
+    reader = handler._illuminance
+    for _ in range(30):
+        brightness = reader.get_last_applied_brightness() or 0
+        fake_hass.states.set("sensor.lux", FakeState(state=str(1 + 0.4 * brightness)))
+        handler.tick()
+        if reader._flapping_freeze_until is not None:
+            break
+    assert reader._flapping_freeze_until is not None
+    assert not reader.should_apply_brightness(20)

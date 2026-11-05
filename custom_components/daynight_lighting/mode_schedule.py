@@ -21,7 +21,6 @@ from .const import (
 )
 from .domain import (
     Mode,
-    calculate_progress_ratio,
     calculate_time_after,
     calculate_time_before,
     determine_mode,
@@ -271,24 +270,3 @@ class DayNightSchedule:
                     wakeup_start.strftime("%H:%M"),
                 )
 
-    def calculate_progress_in_mode(self) -> float:
-        """Calculate progress through the current mode's time window.
-
-        Returns 0.0-1.0 progress for sleep/wake-up modes, 0.0 for day/night.
-
-        This delegates to pure domain functions for calculations.
-        """
-        now = dt_util.now().time()
-        mode = self.get_current_mode()
-
-        if mode == MODE_SLEEP and self._sleep_mode.enabled:
-            sleep_start = self._get_sleep_start_time()
-            sleep_end = self._get_sleep_end_time()
-            return calculate_progress_ratio(now, sleep_start, sleep_end)
-
-        if mode == MODE_WAKEUP and self._wakeup_mode.enabled:
-            wakeup_end = self._get_wakeup_end_time()
-            wakeup_start = calculate_time_before(wakeup_end, self._wakeup_mode.duration_min)
-            return calculate_progress_ratio(now, wakeup_start, wakeup_end)
-
-        return 0.0

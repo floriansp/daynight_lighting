@@ -212,3 +212,43 @@ class TestAsyncAddedToHass:
 
         for lid in switch.get_controlled_lights():
             assert switch._manual_control_detector.is_in_grace_period(lid) is True
+
+
+class TestLuxCalibrationAccess:
+    """The calibration service reaches the instance only through its public API."""
+
+    def test_stored_calibration_is_persisted_and_applied(self, make_switch):
+        switch, *_ = make_switch(day_mode=True)
+
+        switch.store_lux_calibration(42.5)
+
+        assert switch._state_ctrl.get_lux_calibration() == 42.5
+        assert switch._illuminance.get_lux_calibration() == 42.5
+
+    def test_raw_lux_is_none_without_a_reading(self, make_switch, fake_hass):
+        switch, *_ = make_switch(day_mode=True)
+        fake_hass.states.set("sensor.lux", FakeState(state="unavailable"))
+
+        assert switch.read_raw_lux() is None
+
+    def test_raw_lux_is_the_sensor_reading(self, make_switch, fake_hass):
+        switch, *_ = make_switch(day_mode=True)
+        fake_hass.states.set("sensor.lux", FakeState(state="120"))
+
+        assert switch.read_raw_lux() == 120.0
+
+
+def test_switch_offers_everything_the_instance_controller_protocol_promises():
+    """Platforms and services type the switch as InstanceController."""
+    from custom_components.daynight_lighting.protocols import InstanceController
+    from custom_components.daynight_lighting.switch import DayNightLightingSwitch
+
+    promised = {
+        name
+        for name, member in vars(InstanceController).items()
+        if callable(member) and not name.startswith("_")
+    }
+    missing = {name for name in promised if not callable(getattr(DayNightLightingSwitch, name, None))}
+
+    assert promised, "the protocol should declare methods"
+    assert not missing, f"switch lacks: {sorted(missing)}"

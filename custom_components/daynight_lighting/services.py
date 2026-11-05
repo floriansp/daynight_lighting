@@ -19,7 +19,7 @@ from .const import (
 )
 from .instance_data import (
     KEY_DAY_BRIGHTNESS,
-    KEY_MAIN_SWITCH,
+    instance_controller,
     KEY_NIGHT_BRIGHTNESS,
     instance_entity,
 )
@@ -221,12 +221,6 @@ def _get_config_and_lights_for_entity_id(
     return (config_entry, lights)
 
 
-def _get_lights_for_entity_id(hass: HomeAssistant, entity_id: str) -> list[str] | None:
-    """Resolve entity_id to lights list; None if not a valid main switch."""
-    config_entry, lights = _get_config_and_lights_for_entity_id(hass, entity_id)
-    return lights if config_entry else None
-
-
 # Keys to strip from service data before forwarding to light.turn_on / turn_off.
 # "keep_on_in_night_mode" is the removed pre-1.19.0 parameter that old
 # wall-button automations still send alongside ``hold: true``. It is redundant
@@ -252,7 +246,7 @@ async def async_turn_on(call: ServiceCall) -> None:
                 eid,
             )
             continue
-        main_switch = instance_entity(hass, config_entry.entry_id, KEY_MAIN_SWITCH)
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is not None and main_switch.is_wall_buttons_blocked():
             _LOGGER.info(
                 "daynight_lighting.turn_on: %s wall buttons blocked, ignoring",
@@ -269,9 +263,7 @@ async def async_turn_on(call: ServiceCall) -> None:
             # manual control. They hold until the mode recomputes; an
             # automation that wants them to stand announces itself with the
             # scene blocker.
-            main_switch = instance_entity(
-                hass, config_entry.entry_id, KEY_MAIN_SWITCH
-            )
+            main_switch = instance_controller(hass, config_entry.entry_id)
             stays_on = passthrough.get("brightness_pct") != 0
             if main_switch is not None:
                 main_switch.prepare_lights_applied_by_service(
@@ -286,9 +278,7 @@ async def async_turn_on(call: ServiceCall) -> None:
             )
         else:
             # No brightness/color → add our values (day: LUX+circadian, night: night) so result matches.
-            main_switch = instance_entity(
-                hass, config_entry.entry_id, KEY_MAIN_SWITCH
-            )
+            main_switch = instance_controller(hass, config_entry.entry_id)
             if main_switch is not None:
                 our_params = main_switch.get_desired_turn_on_params(force_on=hold)
                 passthrough = {**our_params, **passthrough}
@@ -336,7 +326,7 @@ async def async_turn_off(call: ServiceCall) -> None:
                 eid,
             )
             continue
-        main_switch = instance_entity(hass, config_entry.entry_id, KEY_MAIN_SWITCH)
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is not None and main_switch.is_wall_buttons_blocked():
             _LOGGER.info(
                 "daynight_lighting.turn_off: %s wall buttons blocked, ignoring",
@@ -344,9 +334,7 @@ async def async_turn_off(call: ServiceCall) -> None:
             )
             continue
         passthrough = {k: v for k, v in call.data.items() if k not in _SERVICE_STRIP_KEYS}
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is not None:
             main_switch.prepare_lights_turn_off_by_service(lights)
         # hold: see turn_on. Default False, so a system automation only
@@ -393,9 +381,7 @@ async def async_adjust_brightness(call: ServiceCall) -> None:
             )
             continue
 
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is None:
             continue
 
@@ -500,9 +486,7 @@ async def async_hold_all(call: ServiceCall) -> None:
             )
             continue
 
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is None:
             _LOGGER.error(
                 "daynight_lighting.hold_all: main_switch not found for %s",
@@ -538,9 +522,7 @@ async def async_release_hold(call: ServiceCall) -> None:
             )
             continue
 
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is None:
             _LOGGER.error(
                 "daynight_lighting.release_hold: main_switch not found for %s",
@@ -579,9 +561,7 @@ async def async_calibrate_lux(call: ServiceCall) -> None:
             )
             continue
 
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is None:
             _LOGGER.error(
                 "daynight_lighting.calibrate_lux: main_switch not found for %s",
@@ -589,10 +569,7 @@ async def async_calibrate_lux(call: ServiceCall) -> None:
             )
             continue
 
-        # Get the light sensor entity
-        illuminance_reader = main_switch._illuminance
-        light_sensor = illuminance_reader.get_light_sensor_entity()
-        if not light_sensor:
+        if not main_switch.has_lux_sensor():
             _LOGGER.error(
                 "daynight_lighting.calibrate_lux: instance %s has no light_sensor configured",
                 eid,
@@ -619,7 +596,7 @@ async def async_calibrate_lux(call: ServiceCall) -> None:
         )
         await asyncio.sleep(30)
 
-        lux_at_100 = illuminance_reader.get_lux_raw()
+        lux_at_100 = main_switch.read_raw_lux()
         if lux_at_100 is None:
             _LOGGER.error(
                 "daynight_lighting.calibrate_lux: failed to read LUX at 100%% (sensor unavailable)"
@@ -641,7 +618,7 @@ async def async_calibrate_lux(call: ServiceCall) -> None:
         )
         await asyncio.sleep(30)
 
-        lux_at_0 = illuminance_reader.get_lux_raw()
+        lux_at_0 = main_switch.read_raw_lux()
         if lux_at_0 is None:
             _LOGGER.error(
                 "daynight_lighting.calibrate_lux: failed to read LUX at 0%% (sensor unavailable)"
@@ -657,12 +634,7 @@ async def async_calibrate_lux(call: ServiceCall) -> None:
             lux_contribution,
         )
 
-        # Store in persistent state
-        state_ctrl = main_switch._state_ctrl
-        state_ctrl.set_lux_calibration(lux_contribution)
-
-        # Update illuminance reader
-        illuminance_reader.set_lux_calibration(lux_contribution)
+        main_switch.store_lux_calibration(lux_contribution)
 
         _LOGGER.info(
             "daynight_lighting.calibrate_lux: calibration complete for instance %s"
@@ -698,9 +670,7 @@ async def async_start_sleep_mode(call: ServiceCall) -> None:
             )
             continue
 
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is None:
             _LOGGER.error(
                 "daynight_lighting.start_sleep_mode: main_switch not found for %s",
@@ -750,9 +720,7 @@ async def async_start_wakeup_mode(call: ServiceCall) -> None:
             )
             continue
 
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is None:
             _LOGGER.error(
                 "daynight_lighting.start_wakeup_mode: main_switch not found for %s",
@@ -798,9 +766,7 @@ async def async_stop_sleep_mode(call: ServiceCall) -> None:
             )
             continue
 
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is None:
             _LOGGER.error(
                 "daynight_lighting.stop_sleep_mode: main_switch not found for %s",
@@ -837,9 +803,7 @@ async def async_stop_wakeup_mode(call: ServiceCall) -> None:
             )
             continue
 
-        main_switch = instance_entity(
-            hass, config_entry.entry_id, KEY_MAIN_SWITCH
-        )
+        main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is None:
             _LOGGER.error(
                 "daynight_lighting.stop_wakeup_mode: main_switch not found for %s",

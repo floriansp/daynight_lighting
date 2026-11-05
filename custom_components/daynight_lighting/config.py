@@ -23,6 +23,10 @@ __all__ = [
 ]
 
 from .const import (
+    CONF_DETECTED_HOLD_SURVIVES_PHASE,
+    DEFAULT_DETECTED_HOLD_SURVIVES_PHASE,
+    CONF_HOLD_TIMEOUT_MIN,
+    DEFAULT_HOLD_TIMEOUT_MIN,
     CONF_AREA_ID,
     CONF_BRIGHTNESS_CHANGE_THRESHOLD_PCT,
     CONF_CIRCADIAN_ENABLED,
@@ -300,6 +304,9 @@ class DayNightConfig:
     light_sensor: str | list[str] | None = None
     motion_sensor: str | list[str] | None = None
 
+    detected_hold_survives_phase: bool = DEFAULT_DETECTED_HOLD_SURVIVES_PHASE
+    hold_timeout_min: int = DEFAULT_HOLD_TIMEOUT_MIN
+
     # Area-based discovery settings
     use_area_discovery: bool = DEFAULT_USE_AREA_DISCOVERY
     included_lights: list[str] = field(default_factory=list)
@@ -488,6 +495,13 @@ class DayNightConfig:
         )
 
         return cls(
+            detected_hold_survives_phase=bool(options.get(
+                CONF_DETECTED_HOLD_SURVIVES_PHASE,
+                DEFAULT_DETECTED_HOLD_SURVIVES_PHASE,
+            )),
+            hold_timeout_min=max(
+                0, int(options.get(CONF_HOLD_TIMEOUT_MIN, DEFAULT_HOLD_TIMEOUT_MIN))
+            ),
             instance_name=instance_name,
             lights=lights,
             area_id=area_id,

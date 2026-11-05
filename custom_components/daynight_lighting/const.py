@@ -185,3 +185,9 @@ EVENT_MODE_CHANGED = f"{DOMAIN}_mode_changed"
 
 # Dispatcher signal telling the sensors of one instance to re-read
 SIGNAL_MONITOR_UPDATE = DOMAIN + "_monitor_update_{entry_id}"
+
+# Per-instance hold lifetime.
+CONF_DETECTED_HOLD_SURVIVES_PHASE = "detected_hold_survives_phase"
+DEFAULT_DETECTED_HOLD_SURVIVES_PHASE = True
+CONF_HOLD_TIMEOUT_MIN = "hold_timeout_min"
+DEFAULT_HOLD_TIMEOUT_MIN = 0

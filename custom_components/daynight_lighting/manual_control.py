@@ -217,7 +217,7 @@ class ManualControlDetector:
     DEFAULT_KELVIN_TOLERANCE = 200
 
     # Grace period after we apply values (seconds)
-    # Only needs to cover async command latency (3-5s), not tick interval
+    # Covers async command latency (3-5s) in addition to the commanded ramp
     DEFAULT_GRACE_PERIOD_SEC = 5
 
     @classmethod
@@ -259,18 +259,23 @@ class ManualControlDetector:
 
         # Grace period tracking - lights we recently applied values to
         self._last_applied_time: dict[str, datetime] = {}
+        self._transition_seconds: dict[str, float] = {}
         self._grace_period_sec = self.DEFAULT_GRACE_PERIOD_SEC
 
-    def mark_applied(self, lights: list[str]) -> None:
+    def mark_applied(
+        self, lights: list[str], transition_seconds: float = 0
+    ) -> None:
         """Mark lights as recently having values applied by us.
 
         These lights will be excluded from external control detection
-        for the grace period (default 5 seconds) to avoid race conditions
-        where we detect our own in-flight commands as external control.
+        for the transition duration plus the grace period (default 5 seconds),
+        avoiding detection of our own in-flight commands as external control.
+        Callers without a commanded ramp retain the default grace period.
         """
         now = datetime.now(timezone.utc)
         for lid in lights:
             self._last_applied_time[lid] = now
+            self._transition_seconds[lid] = transition_seconds
 
     def is_in_grace_period(self, light_id: str) -> bool:
         """Check if light was recently applied and is still in grace period."""
@@ -278,10 +283,14 @@ class ManualControlDetector:
         if applied_time is None:
             return False
         elapsed = (datetime.now(timezone.utc) - applied_time).total_seconds()
-        if elapsed < self._grace_period_sec:
+        protected_seconds = (
+            self._transition_seconds.get(light_id, 0) + self._grace_period_sec
+        )
+        if elapsed < protected_seconds:
             return True
         # Clean up expired entry
         del self._last_applied_time[light_id]
+        self._transition_seconds.pop(light_id, None)
         return False
 
     def check_external_control(

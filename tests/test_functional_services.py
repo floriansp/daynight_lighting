@@ -1,8 +1,14 @@
 """Functional tests: Service API methods on DayNightLightingSwitch."""
 
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from custom_components.daynight_lighting.const import MODE_NIGHT
+from custom_components.daynight_lighting.services import async_turn_off, async_turn_on
 
 from tests.conftest import FakeState
 
@@ -235,3 +241,88 @@ class TestTurnOnAfterHoldOff:
         assert expected["on"] is True
         assert expected["brightness_pct"] == 45
         assert switch._state_ctrl.is_held("light.a")
+
+
+@pytest.mark.parametrize("duration", [0, 5, 12])
+@pytest.mark.parametrize("on", [True, False])
+def test_service_preparation_protects_the_commanded_transition(
+    make_switch, duration, on
+):
+    """Direct service commands share the detector's transition-aware grace."""
+    switch, *_ = make_switch()
+    detector = switch._manual_control_detector
+    start = datetime(2026, 11, 19, tzinfo=timezone.utc)
+    with patch("custom_components.daynight_lighting.manual_control.datetime") as clock:
+        clock.now.return_value = start
+        if on:
+            switch.prepare_lights_applied_by_service(
+                ["light.a"], on=True, brightness_pct=80,
+                transition_seconds=duration,
+            )
+        else:
+            switch.prepare_lights_turn_off_by_service(
+                ["light.a"], transition_seconds=duration
+            )
+        clock.now.return_value = start + timedelta(seconds=duration + 4.999)
+        assert detector.is_in_grace_period("light.a")
+        assert not detector.is_in_grace_period("light.b")
+        clock.now.return_value = start + timedelta(seconds=duration + 5)
+        assert not detector.is_in_grace_period("light.a")
+
+
+@pytest.mark.parametrize("command", ["turn_on", "turn_on_explicit", "turn_off"])
+@pytest.mark.parametrize(
+    ("transition", "duration", "error"),
+    [
+        ("5", 5, None),
+        ("2.5", 2.5, None),
+        (None, 0, None),
+        ("{{ transition }}", None, ValueError),
+        (timedelta(seconds=5), None, TypeError),
+    ],
+)
+@pytest.mark.asyncio
+async def test_service_transition_is_numeric_before_marking(
+    make_switch, fake_hass, command, transition, duration, error
+):
+    """Coerce service ramps or reject them before they can poison detection."""
+    switch, *_ = make_switch(day_mode=False)
+    detector = switch._manual_control_detector
+    fake_hass.services.async_call = AsyncMock()
+    data = {"entity_id": "switch.test", "transition": transition}
+    if command == "turn_on_explicit":
+        data["brightness_pct"] = 80
+    call = SimpleNamespace(hass=fake_hass, data=data)
+    handler = async_turn_off if command == "turn_off" else async_turn_on
+    start = datetime(2026, 11, 19, tzinfo=timezone.utc)
+    with (
+        patch(
+            "custom_components.daynight_lighting.services."
+            "_get_config_and_lights_for_entity_id",
+            return_value=(SimpleNamespace(entry_id="test_entry"), ["light.a"]),
+        ),
+        patch(
+            "custom_components.daynight_lighting.services.instance_controller",
+            return_value=switch,
+        ),
+        patch("custom_components.daynight_lighting.manual_control.datetime") as clock,
+    ):
+        clock.now.return_value = start
+        if error is not None:
+            with pytest.raises(error):
+                await handler(call)
+            fake_hass.services.async_call.assert_not_called()
+            assert not detector.is_in_grace_period("light.a")
+            assert "light.a" not in detector._last_applied_time
+            assert "light.a" not in detector._transition_seconds
+            return
+        await handler(call)
+        # Only the detector's copy is coerced; preserve service passthrough.
+        assert fake_hass.services.async_call.call_args.args[2]["transition"] == transition
+        clock.now.return_value = start + timedelta(seconds=duration + 4.999)
+        assert detector.is_in_grace_period("light.a")
+        assert not detector.is_in_grace_period("light.b")
+        clock.now.return_value = start + timedelta(seconds=duration + 5)
+        assert not detector.is_in_grace_period("light.a")
+        assert "light.a" not in detector._last_applied_time
+        assert "light.a" not in detector._transition_seconds

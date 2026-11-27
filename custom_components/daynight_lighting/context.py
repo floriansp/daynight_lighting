@@ -57,7 +57,7 @@ class SharedHandlerDeps:
     is_control_color_on: Callable[[], bool]
     get_transition: Callable[[str], int]
     on_applied: Callable[[ExpectedState], None] | None = None
-    mark_applied: Callable[[list[str]], None] | None = None
+    mark_applied: Callable[[list[str], float], None] | None = None
     is_in_grace_period: Callable[[str], bool] = lambda _: False
     get_night_brightness: Callable[[], int | None] = lambda: None
     get_day_brightness: Callable[[], int | None] = lambda: None

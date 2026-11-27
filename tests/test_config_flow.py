@@ -22,6 +22,7 @@ from custom_components.daynight_lighting.const import (
     CONF_CIRCADIAN_MAX_KELVIN,
     CONF_CIRCADIAN_MIN_KELVIN,
     CONF_DAY_MAX_BRIGHTNESS,
+    CONF_DAY_SWITCH_DWELL_MIN,
     CONF_DAY_MIN_BRIGHTNESS,
     CONF_DETECTED_HOLD_SURVIVES_PHASE,
     CONF_INITIAL_TRANSITION_SECONDS,
@@ -45,6 +46,7 @@ from custom_components.daynight_lighting.const import (
     DEFAULT_CIRCADIAN_MAX_KELVIN,
     DEFAULT_CIRCADIAN_MIN_KELVIN,
     DEFAULT_DAY_MAX_BRIGHTNESS,
+    DEFAULT_DAY_SWITCH_DWELL_MIN,
     DEFAULT_DAY_MIN_BRIGHTNESS,
     DEFAULT_DETECTED_HOLD_SURVIVES_PHASE,
     DEFAULT_INITIAL_TRANSITION_SECONDS,
@@ -574,6 +576,7 @@ class TestSectionGrouping:
         CONF_DETECTED_HOLD_SURVIVES_PHASE,
         CONF_HOLD_TIMEOUT_MIN,
         # day_mode
+        CONF_DAY_SWITCH_DWELL_MIN,
         CONF_LUX_ON,
         CONF_LUX_OFF,
         CONF_DAY_MIN_BRIGHTNESS,
@@ -603,6 +606,7 @@ class TestSectionGrouping:
             CONF_HOLD_TIMEOUT_MIN,
         },
         SECTION_DAY: {
+            CONF_DAY_SWITCH_DWELL_MIN,
             CONF_LUX_ON,
             CONF_LUX_OFF,
             CONF_DAY_MIN_BRIGHTNESS,
@@ -669,6 +673,7 @@ class TestSectionGrouping:
                 CONF_HOLD_TIMEOUT_MIN: DEFAULT_HOLD_TIMEOUT_MIN,
             },
             SECTION_DAY: {
+                CONF_DAY_SWITCH_DWELL_MIN: DEFAULT_DAY_SWITCH_DWELL_MIN,
                 CONF_LUX_ON: DEFAULT_LUX_ON,
                 CONF_LUX_OFF: DEFAULT_LUX_OFF,
                 CONF_DAY_MIN_BRIGHTNESS: DEFAULT_DAY_MIN_BRIGHTNESS,

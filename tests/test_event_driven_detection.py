@@ -9,6 +9,8 @@ released or the phase changes.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 from types import SimpleNamespace
 from typing import Any
 
@@ -521,3 +523,58 @@ class TestStartupGuard:
         report_light_state(listener, "light.a", scene)
 
         assert switch._state_ctrl.is_held("light.a")
+
+
+@pytest.mark.parametrize("duration", [5, 12])
+@pytest.mark.parametrize("service", ["turn_on", "turn_off"])
+def test_a_ramping_light_is_not_external_control(
+    make_switch, fake_hass, monkeypatch, duration, service
+):
+    """Intermediate reports and real interventions share ramp grace (V31)."""
+    switch, *_ = make_switch(
+        day_mode=False, options={"initial_transition_seconds": duration}
+    )
+    switch._schedule_override = SimpleNamespace(
+        get_current_mode=lambda: MODE_NIGHT,
+        is_day_mode=lambda: False,
+        get_mode_and_time_for_log=lambda: ("at_time", "22:00"),
+    )
+    stub_wakeup_inactive(monkeypatch)
+    captured = capture_light_listener(monkeypatch)
+    switch._start_listeners()
+    switch._first_tick_after_startup = False
+    listener = light_listener(captured)
+    applier = switch._shared_deps.light_applier
+    fake_hass.states.set("light.a", FakeState(state="on"))
+    start = datetime(2026, 11, 19, 22, 34, 55, tzinfo=timezone.utc)
+
+    def report(brightness: int) -> None:
+        state = FakeState(state="on", attributes={"brightness": brightness})
+        fake_hass.states.set("light.a", state)
+        report_light_state(listener, "light.a", state)
+
+    with patch("custom_components.daynight_lighting.manual_control.datetime") as clock:
+        clock.now.return_value = start
+        if service == "turn_on":
+            applier.turn_on(
+                ["light.a"], {"entity_id": ["light.a"], "brightness_pct": 80},
+                transition="initial", brightness_pct=80,
+            )
+        else:
+            applier.turn_off(["light.a"], transition="initial")
+        assert fake_hass.services.async_call.call_args[0][2]["transition"] == duration
+
+        clock.now.return_value = start + timedelta(seconds=5.1)
+        report(51)  # Our own still-ramping 20%, far from either target.
+        assert not switch._state_ctrl.is_held("light.a")
+
+        clock.now.return_value = start + timedelta(seconds=duration + 4.999)
+        report(230)  # Even a real intervention is ignored during grace.
+        assert not switch._state_ctrl.is_held("light.a")
+
+        clock.now.return_value = start + timedelta(seconds=duration + 5)
+        # Expiry is passive: a fresh eligible report triggers judgement.
+        assert not switch._state_ctrl.is_held("light.a")
+        report(230)
+        assert switch._state_ctrl.is_held("light.a")
+        assert switch._state_ctrl.get_hold_reason("light.a") == HOLD_REASON_DETECTED

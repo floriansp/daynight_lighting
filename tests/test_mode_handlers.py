@@ -6,14 +6,17 @@ for each mode handler.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
 from homeassistant.util import dt as dt_util
 
+from custom_components.daynight_lighting.config import IlluminanceConfig
 from custom_components.daynight_lighting.context import SharedHandlerDeps
+from custom_components.daynight_lighting.illuminance import IlluminanceReader
 from custom_components.daynight_lighting.manual_control import ExpectedState
 from custom_components.daynight_lighting.handlers import (
     DayModeHandler,
@@ -33,6 +36,7 @@ def _make_config(**kwargs) -> SimpleNamespace:
         "max_brightness": 100,
         "fallback": "skip",
         "fixed_brightness_pct": 80,
+        "switch_dwell_min": 0,
         "brightness": 80,
         "motion_off_delay_min": 5,
         "on_enter_night": "leave",
@@ -81,6 +85,47 @@ def _make_shared_deps(fake_hass, mocks=None) -> SharedHandlerDeps:
 # ===================================================================
 #  DayModeHandler
 # ===================================================================
+
+
+def test_day_enter_clears_the_applied_memory(fake_hass) -> None:
+    """Taking over forgets commands and dwell, but keeps the dial and freeze."""
+    mocks = _make_mocks()
+    reader = IlluminanceReader(fake_hass, IlluminanceConfig(), "Test")
+    shared = replace(
+        _make_shared_deps(fake_hass, mocks), get_day_brightness=lambda: 63
+    )
+    handler = DayModeHandler(
+        shared=shared,
+        config=_make_config(),
+        illuminance=reader,
+        weather=MagicMock(),
+        circadian=mocks["circadian"],
+    )
+    reader.record_brightness_applied(80)
+    freeze_until = datetime.now() + timedelta(minutes=5)
+    reader._flapping_freeze_until = freeze_until
+    handler._last_applied_kelvin = 4000
+    handler._effective_on = True
+    handler._effective_brightness = 80
+    handler._pending_on = False
+    handler._pending_since = datetime.now()
+    handler._last_measurement = ("previous measurement",)
+
+    handler.enter(previous_mode="night")
+
+    assert reader.get_last_applied_brightness() is None
+    assert not reader._brightness_history
+    assert handler._last_applied_kelvin is None
+    assert handler._effective_on is None
+    assert handler._effective_brightness is None
+    assert handler._pending_on is None
+    assert handler._pending_since is None
+    assert handler._last_measurement == ()
+    assert handler.target_fixed_brightness() == 63
+    assert reader._flapping_freeze_until == freeze_until
+    assert reader.should_apply_brightness(80) is False
+    assert not mocks["lights"].mock_calls
+    fake_hass.services.async_call.assert_not_called()
 
 
 class TestDayModeHandlerCalculateExpectedState:

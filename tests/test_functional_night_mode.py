@@ -1,6 +1,8 @@
 """Functional tests: Night-mode orchestration in DayNightLightingSwitch."""
 
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 
 from custom_components.daynight_lighting.const import MODE_DAY, MODE_NIGHT
@@ -227,30 +229,33 @@ class TestHandleMotionOn:
         assert night_handler._reapply_instead_of_hold is False
 
     def test_diverged_but_in_grace_period_not_held(self, make_switch, fake_hass):
-        """Our own in-flight ramp (grace period) is left alone, not held."""
-        switch, *_ = make_switch(day_mode=False)
-        switch._state_ctrl.mark_controlled(["light.a"])
-        # We just commanded this light: still inside its grace period.
-        switch._manual_control_detector.mark_applied(["light.a"])
-
-        # Still ramping toward the target: diverged for now.
-        fake_hass.states.set(
-            "light.a",
-            FakeState(
-                state="on",
-                attributes={"brightness": 51, "color_temp": 225},  # 20% of 255
-            ),
+        """Motion during our actual ramp must not hold a diverging light."""
+        switch, *_ = make_switch(
+            day_mode=False, options={"initial_transition_seconds": 5}
         )
-        fake_hass.states.set("light.b", FakeState(state="off"))
+        start = datetime(2026, 11, 19, tzinfo=timezone.utc)
+        with patch("custom_components.daynight_lighting.manual_control.datetime") as clock:
+            clock.now.return_value = start
+            switch._handle_motion_on()  # Issues a real five-second ON command.
+            assert fake_hass.services.async_call.call_args[0][2]["transition"] == 5
+            fake_hass.services.async_call.reset_mock()
+            fake_hass.states.set(
+                "light.a",
+                FakeState(state="on", attributes={"brightness": 51, "color_temp": 225}),
+            )
+            fake_hass.states.set(
+                "light.b",
+                FakeState(state="on", attributes={"brightness": 204, "color_temp": 225}),
+            )
+            clock.now.return_value = start + timedelta(seconds=5.1)
+            switch._handle_motion_on()
+            assert not switch._state_ctrl.is_held("light.a")
+            fake_hass.services.async_call.assert_not_called()
 
-        switch._handle_motion_on()
-
-        # Not re-applied (our own ramp) and not held (grace period).
-        calls = fake_hass.services.async_call.call_args_list
-        assert len(calls) == 1
-        payload = calls[0][0][2]
-        assert "light.a" not in payload["entity_id"]
-        assert not switch._state_ctrl.is_held("light.a")
+            clock.now.return_value = start + timedelta(seconds=10)
+            switch._handle_motion_on()
+            assert switch._state_ctrl.is_held("light.a")
+            assert not switch._state_ctrl.is_held("light.b")
 
     def test_small_divergence_holds_not_reapplies(self, make_switch, fake_hass):
         """A 7% brightness drift (inside adoption tolerance, outside detector's)

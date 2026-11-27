@@ -271,7 +271,8 @@ def make_switch(fake_hass, fake_store):
         day_mode: bool = True,
         sun_elevation: float = 30.0,
     ):
-        opts = {**DEFAULT_FUNCTIONAL_OPTIONS, **(options or {})}
+        # Legacy orchestration tests exercise immediate switching explicitly.
+        opts = {**DEFAULT_FUNCTIONAL_OPTIONS, "day_switch_dwell_min": 0, **(options or {})}
         entry = MockConfigEntry(
             options=opts, data={"instance_name": "Test"}
         )

@@ -48,6 +48,7 @@ from .const import (
     CONF_DAY_MAX_BRIGHTNESS,
     CONF_DAY_MIN_BRIGHTNESS,
     CONF_DAY_MODE_FALLBACK,
+    CONF_DAY_SWITCH_DWELL_MIN,
     CONF_EXCLUDED_MOTION_SENSORS,
     CONF_FLAPPING_FREEZE_MIN,
     CONF_INCLUDED_LIGHTS,
@@ -94,6 +95,7 @@ from .const import (
     DEFAULT_DAY_MAX_BRIGHTNESS,
     DEFAULT_DAY_MIN_BRIGHTNESS,
     DEFAULT_DAY_MODE_FALLBACK,
+    DEFAULT_DAY_SWITCH_DWELL_MIN,
     DEFAULT_FLAPPING_FREEZE_MIN,
     DEFAULT_INITIAL_TRANSITION_SECONDS,
     DEFAULT_INSTANCE_NAME,
@@ -391,6 +393,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         day_schema = vol.Schema(
             {
+                vol.Optional(
+                    CONF_DAY_SWITCH_DWELL_MIN,
+                    default=_f(CONF_DAY_SWITCH_DWELL_MIN, DEFAULT_DAY_SWITCH_DWELL_MIN),
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, step=1, unit_of_measurement="min")
+                ),
                 vol.Optional(
                     CONF_LUX_ON,
                     default=_f(CONF_LUX_ON, DEFAULT_LUX_ON),

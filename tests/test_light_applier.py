@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
 import pytest
 
 from custom_components.daynight_lighting.light_applier import LightApplier
+from custom_components.daynight_lighting.manual_control import (
+    ExpectedState,
+    ManualControlDetector,
+)
 from custom_components.daynight_lighting.state_controller import StateController
 
 from tests.conftest import FakeState
@@ -94,6 +101,7 @@ class TestTurnOff:
     """Turning off must release the lights and expect them off."""
 
     def test_calls_service_with_transition(self, fake_hass, fake_store):
+        fake_hass.states.set("light.a", FakeState(state="on"))
         applier, _ = _make_applier(fake_hass, fake_store)
 
         applier.turn_off(["light.a"], transition="mode")
@@ -117,9 +125,9 @@ class TestMarkApplied:
     """The commanded lights are exempted from detection while in flight."""
 
     def test_turn_on_marks_the_commanded_lights(self, fake_hass, fake_store):
-        marked: list[list[str]] = []
+        marked: list[tuple[list[str], float]] = []
         applier, _ = _make_applier(
-            fake_hass, fake_store, mark_applied=lambda lights: marked.append(lights)
+            fake_hass, fake_store, mark_applied=lambda lights, seconds: marked.append((lights, seconds))
         )
 
         applier.turn_on(
@@ -128,17 +136,18 @@ class TestMarkApplied:
             transition="tick",
         )
 
-        assert marked == [["light.a", "light.b"]]
+        assert marked == [(["light.a", "light.b"], 2)]
 
     def test_turn_off_marks_the_commanded_lights(self, fake_hass, fake_store):
-        marked: list[list[str]] = []
+        fake_hass.states.set("light.a", FakeState(state="on"))
+        marked: list[tuple[list[str], float]] = []
         applier, _ = _make_applier(
-            fake_hass, fake_store, mark_applied=lambda lights: marked.append(lights)
+            fake_hass, fake_store, mark_applied=lambda lights, seconds: marked.append((lights, seconds))
         )
 
         applier.turn_off(["light.a"], transition="tick")
 
-        assert marked == [["light.a"]]
+        assert marked == [(["light.a"], 2)]
 
     def test_no_mark_applied_observer_is_safe(self, fake_hass, fake_store):
         """Without an observer, switching still works."""
@@ -151,7 +160,7 @@ class TestMarkApplied:
     def test_mark_applied_observer_raising_does_not_break_switching(
         self, fake_hass, fake_store
     ):
-        def _raise(_lights: list[str]) -> None:
+        def _raise(_lights: list[str], _seconds: float) -> None:
             raise RuntimeError("boom")
 
         applier, state_ctrl = _make_applier(
@@ -168,6 +177,7 @@ class TestTransitionContext:
 
     @pytest.mark.parametrize("context", ["tick", "initial", "mode"])
     def test_context_forwarded(self, fake_hass, fake_store, context):
+        fake_hass.states.set("light.a", FakeState(state="on"))
         seen: list[str] = []
         state_ctrl = StateController(fake_hass, "test_entry", "Test")
         state_ctrl._store = fake_store
@@ -238,3 +248,97 @@ class TestStepBrightness:
 
         _, payload = _light_call(fake_hass)
         assert payload["brightness_pct"] == 10
+
+
+def test_turn_off_skips_lights_that_are_already_off(fake_hass, fake_store) -> None:
+    """Only real off commands renew grace; all targets retain off bookkeeping."""
+    lights = [
+        "light.on",
+        "light.off",
+        "light.unknown",
+        "light.unavailable",
+        "light.missing",
+        "light.also_on",
+    ]
+    for light, state in [
+        ("light.on", "on"),
+        ("light.off", "off"),
+        ("light.unknown", "unknown"),
+        ("light.unavailable", "unavailable"),
+        ("light.also_on", "on"),
+    ]:
+        fake_hass.states.set(light, FakeState(state=state))
+    marked: list[tuple[list[str], float]] = []
+    notified: list[ExpectedState] = []
+    state_ctrl = StateController(fake_hass, "test_entry", "Test")
+    state_ctrl._store = fake_store
+    applier = LightApplier(
+        fake_hass,
+        state_ctrl,
+        lambda _context: 2,
+        on_applied=notified.append,
+        mark_applied=lambda lights, seconds: marked.append((lights, seconds)),
+    )
+    state_ctrl.mark_controlled(lights)
+
+    applier.turn_off(lights, transition="tick")
+
+    fake_hass.services.async_call.assert_called_once_with(
+        "light",
+        "turn_off",
+        {"entity_id": ["light.on", "light.also_on"], "transition": 2},
+    )
+    assert marked == [(["light.on", "light.also_on"], 2)]
+    assert notified == [ExpectedState(on=False)]
+    assert state_ctrl.get_lights_we_control() == set()
+    for light in lights:
+        assert state_ctrl.get_expected_state(light)["on"] is False
+        fake_hass.states.set(light, FakeState(state="off"))
+        # Stale bookkeeping must be corrected even without a service call.
+        state_ctrl.set_expected_state(light, on=True)
+    state_ctrl.mark_controlled(lights)
+
+    applier.turn_off(lights, transition="tick")
+
+    assert fake_hass.services.async_call.call_count == 1
+    assert marked == [(["light.on", "light.also_on"], 2)]
+    assert notified == [ExpectedState(on=False), ExpectedState(on=False)]
+    assert state_ctrl.get_lights_we_control() == set()
+    for light in lights:
+        assert state_ctrl.get_expected_state(light)["on"] is False
+
+
+@pytest.mark.parametrize("service", ["turn_on", "turn_off"])
+@pytest.mark.parametrize("duration", [0, 5, 12])
+def test_a_transition_extends_the_grace_period(
+    fake_hass, fake_store, service, duration
+):
+    """Only commanded lights get the ramp duration plus five seconds (V31)."""
+    detector = ManualControlDetector("Test")
+    applier, _ = _make_applier(
+        fake_hass, fake_store, duration, mark_applied=detector.mark_applied
+    )
+    fake_hass.states.set("light.a", FakeState(state="on"))
+    fake_hass.states.set("light.off", FakeState(state="off"))
+    start = datetime(2026, 11, 19, 22, 34, 55, tzinfo=timezone.utc)
+    with patch("custom_components.daynight_lighting.manual_control.datetime") as clock:
+        clock.now.return_value = start
+        if service == "turn_on":
+            applier.turn_on(
+                ["light.a"], {"entity_id": ["light.a"]}, transition="initial"
+            )
+        else:
+            applier.turn_off(["light.a", "light.off"], transition="mode")
+        _, payload = _light_call(fake_hass)
+        assert payload.get("transition", 0) == duration
+        assert not detector.is_in_grace_period("light.b")
+        assert not detector.is_in_grace_period("light.off")
+
+        for seconds in sorted({4.999, 5, 5.1, duration + 4.999, duration + 5}):
+            clock.now.return_value = start + timedelta(seconds=seconds)
+            assert detector.is_in_grace_period("light.a") is (seconds < duration + 5)
+            # A no-op OFF must not restart or lengthen an existing grace.
+            if service == "turn_off":
+                fake_hass.states.set("light.a", FakeState(state="off"))
+                applier.turn_off(["light.a", "light.off"], transition="mode")
+        assert fake_hass.services.async_call.call_count == 1

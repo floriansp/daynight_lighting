@@ -34,7 +34,7 @@ class ExpectationAdopter:
         self,
         hass: HomeAssistant,
         state_ctrl: StateController,
-        mark_applied: Callable[[list[str]], None],
+        mark_applied: Callable[[list[str], float], None],
         instance_name: str = "",
     ) -> None:
         """Initialize the adopter.
@@ -78,7 +78,7 @@ class ExpectationAdopter:
                 brightness_pct=brightness,
                 kelvin=reported_kelvin(attrs) if on else None,
             )
-            self._mark_applied([lid])
+            self._mark_applied([lid], 0)
             _LOGGER.debug(
                 "[%s] %s: adopted current state after release (nothing was commanded)",
                 self._instance_name,

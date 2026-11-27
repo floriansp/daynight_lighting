@@ -209,8 +209,9 @@ class TestAsyncTurnOff:
             ["light.a", "light.b"], hold=False,
         )
 
+    @pytest.mark.parametrize("duration", [0, 5, 12])
     @pytest.mark.asyncio
-    async def test_turn_off_prepares_before_light_turn_off(self):
+    async def test_turn_off_prepares_before_light_turn_off(self, duration):
         """Expected state OFF + grace period are set before light.turn_off runs.
 
         The state change event fires during the blocking service call, so
@@ -241,14 +242,16 @@ class TestAsyncTurnOff:
         mock_main_switch = MagicMock()
         mock_main_switch.is_wall_buttons_blocked.return_value = False
         mock_main_switch.prepare_lights_turn_off_by_service.side_effect = (
-            lambda lights: order.append("prepare")
+            lambda lights, **kwargs: order.append("prepare")
         )
         mock_main_switch.record_lights_turned_off_by_service.side_effect = (
             lambda lights, hold=False: order.append("record")
         )
         hass.data = {DOMAIN: {"test_entry": {"main_switch": mock_main_switch}}}
 
-        call = self._make_service_call(hass, {"entity_id": "switch.daynight_test"})
+        call = self._make_service_call(
+            hass, {"entity_id": "switch.daynight_test", "transition": duration}
+        )
 
         with patch(
             "custom_components.daynight_lighting.services.er.async_get",
@@ -258,7 +261,7 @@ class TestAsyncTurnOff:
 
         assert order == ["prepare", "light.turn_off", "record"]
         mock_main_switch.prepare_lights_turn_off_by_service.assert_called_once_with(
-            ["light.a", "light.b"]
+            ["light.a", "light.b"], transition_seconds=duration
         )
 
     @pytest.mark.asyncio
@@ -411,8 +414,9 @@ class TestAsyncTurnOn:
             ["light.a", "light.b"], hold=False,
         )
 
+    @pytest.mark.parametrize("duration", [0, 5, 12])
     @pytest.mark.asyncio
-    async def test_turn_on_prepares_before_light_turn_on(self):
+    async def test_turn_on_prepares_before_light_turn_on(self, duration):
         """Expected state is recorded before the blocking light.turn_on runs.
 
         The state change event fires during the blocking call, so preparing
@@ -426,13 +430,16 @@ class TestAsyncTurnOn:
             order.append(("call", f"{domain}.{service}"))
 
         hass.services.async_call = AsyncMock(side_effect=_async_call)
-        main_switch.prepare_lights_applied_by_service.side_effect = (
-            lambda lights, *, on, brightness_pct=None, kelvin=None: order.append(
-                ("prepare", on, brightness_pct, kelvin)
-            )
-        )
+        def _prepare(
+            lights, *, on, brightness_pct=None, kelvin=None, transition_seconds=0
+        ):
+            order.append(("prepare", on, brightness_pct, kelvin))
 
-        call = self._make_service_call(hass, {"entity_id": "switch.daynight_test"})
+        main_switch.prepare_lights_applied_by_service.side_effect = _prepare
+
+        call = self._make_service_call(
+            hass, {"entity_id": "switch.daynight_test", "transition": duration}
+        )
 
         with patch(
             "custom_components.daynight_lighting.services.er.async_get",
@@ -442,7 +449,9 @@ class TestAsyncTurnOn:
 
         assert order == [("prepare", True, 60, 4000), ("call", "light.turn_on")]
         main_switch.prepare_lights_applied_by_service.assert_called_once_with(
-            ["light.a", "light.b"], on=True, brightness_pct=60, kelvin=4000
+            ["light.a", "light.b"],
+            on=True, brightness_pct=60, kelvin=4000,
+            transition_seconds=duration,
         )
 
     @pytest.mark.asyncio
@@ -492,15 +501,23 @@ class TestAsyncTurnOn:
             await async_turn_on(call)
 
         main_switch.prepare_lights_applied_by_service.assert_called_once_with(
-            ["light.a", "light.b"], on=False, brightness_pct=None, kelvin=None
+            ["light.a", "light.b"],
+            on=False, brightness_pct=None, kelvin=None,
+            transition_seconds=0,
         )
 
+    @pytest.mark.parametrize("duration", [0, 5, 12])
     @pytest.mark.asyncio
-    async def test_turn_on_with_user_values_records_them_as_ours(self):
+    async def test_turn_on_with_user_values_records_them_as_ours(self, duration):
         """An instruction to us is not an intervention to step aside for."""
         hass, registry, main_switch = self._setup_hass_for_resolve()
         call = self._make_service_call(
-            hass, {"entity_id": "switch.daynight_test", "brightness_pct": 90}
+            hass,
+            {
+                "entity_id": "switch.daynight_test",
+                "brightness_pct": 90,
+                "transition": duration,
+            },
         )
 
         with patch(
@@ -510,7 +527,9 @@ class TestAsyncTurnOn:
             await async_turn_on(call)
 
         main_switch.prepare_lights_applied_by_service.assert_called_once_with(
-            ["light.a", "light.b"], on=True, brightness_pct=90, kelvin=None
+            ["light.a", "light.b"],
+            on=True, brightness_pct=90, kelvin=None,
+            transition_seconds=duration,
         )
 
     @pytest.mark.asyncio

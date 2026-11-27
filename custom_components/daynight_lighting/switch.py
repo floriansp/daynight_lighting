@@ -1421,6 +1421,7 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         on: bool,
         brightness_pct: int | None = None,
         kelvin: int | None = None,
+        transition_seconds: float = 0,
     ) -> None:
         """Record expected state before a service switches the lights.
 
@@ -1429,15 +1430,19 @@ class DayNightLightingSwitch(SwitchEntity, RestoreEntity):
         are about to set — otherwise event-driven detection reports our own
         change as external control.
         """
-        self._manual_control_detector.mark_applied(lights)
+        self._manual_control_detector.mark_applied(lights, transition_seconds)
         for lid in lights:
             self._state_ctrl.set_expected_state(
                 lid, on=on, brightness_pct=brightness_pct, kelvin=kelvin
             )
 
-    def prepare_lights_turn_off_by_service(self, lights: list[str]) -> None:
+    def prepare_lights_turn_off_by_service(
+        self, lights: list[str], *, transition_seconds: float = 0
+    ) -> None:
         """Prepare for a daynight_lighting.turn_off before the lights switch."""
-        self.prepare_lights_applied_by_service(lights, on=False)
+        self.prepare_lights_applied_by_service(
+            lights, on=False, transition_seconds=transition_seconds
+        )
 
     def record_lights_turned_off_by_service(
         self, lights: list[str], hold: bool = True

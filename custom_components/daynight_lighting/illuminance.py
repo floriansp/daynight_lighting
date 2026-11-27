@@ -339,7 +339,10 @@ class IlluminanceReader:
         is detected, starts a freeze period to prevent further adjustments.
         """
         now = datetime.now()
+        previous = self._last_applied_brightness_pct
         self._last_applied_brightness_pct = brightness_pct
+        if brightness_pct == previous:
+            return
         self._brightness_history.append((now, brightness_pct, gain_bound))
 
         # Flapping detection: check if direction changed 3+ times in the last 5 minutes
@@ -354,6 +357,8 @@ class IlluminanceReader:
         Unknown gain preserves conservative protection.
         """
         now = datetime.now()
+        if self._flapping_freeze_until is not None and now < self._flapping_freeze_until:
+            return
         recent = [
             (ts, pct, gain)
             for ts, pct, gain in self._brightness_history

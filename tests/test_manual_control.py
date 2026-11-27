@@ -6,7 +6,9 @@ to persisted expected state from StateController.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from unittest.mock import patch
+
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 
@@ -162,17 +164,18 @@ class TestMarkApplied:
         assert detector.is_in_grace_period("light.a") is True
 
     def test_is_in_grace_period_false_after_expiry(self):
+        """A command without a transition expires at exactly five seconds."""
         detector = _make_detector()
-        # Manually set time in the past (beyond 5s grace)
-        past = datetime.now(timezone.utc)
-        detector._last_applied_time["light.a"] = past
+        start = datetime(2026, 11, 19, tzinfo=timezone.utc)
+        with patch("custom_components.daynight_lighting.manual_control.datetime") as clock:
+            clock.now.return_value = start
+            detector.mark_applied(["light.a"])
+            clock.now.return_value = start + timedelta(seconds=4.999)
+            assert detector.is_in_grace_period("light.a")
+            clock.now.return_value = start + timedelta(seconds=5)
+            assert not detector.is_in_grace_period("light.a")
+            assert "light.a" not in detector._last_applied_time
 
-        # Should be in grace period (time hasn't moved forward much in test)
-        # In real time, this would eventually expire
-        result = detector.is_in_grace_period("light.a")
-        # This depends on test execution speed, so we verify the logic
-        # The grace period is 5 seconds
-        assert detector.DEFAULT_GRACE_PERIOD_SEC == 5
 
     def test_is_in_grace_period_false_for_unknown_light(self):
         detector = _make_detector()

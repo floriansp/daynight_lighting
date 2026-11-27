@@ -36,6 +36,7 @@ from .const import (
     CONF_DAY_MAX_BRIGHTNESS,
     CONF_DAY_MIN_BRIGHTNESS,
     CONF_DAY_MODE_FALLBACK,
+    CONF_DAY_SWITCH_DWELL_MIN,
     CONF_EXCLUDED_MOTION_SENSORS,
     CONF_FLAPPING_FREEZE_MIN,
     CONF_INCLUDED_LIGHTS,
@@ -79,6 +80,7 @@ from .const import (
     DEFAULT_DAY_MAX_BRIGHTNESS,
     DEFAULT_DAY_MIN_BRIGHTNESS,
     DEFAULT_DAY_MODE_FALLBACK,
+    DEFAULT_DAY_SWITCH_DWELL_MIN,
     DEFAULT_FLAPPING_FREEZE_MIN,
     DEFAULT_INITIAL_TRANSITION_SECONDS,
     DEFAULT_INSTANCE_NAME,
@@ -127,9 +129,14 @@ class DayModeConfig:
     max_brightness: int = DEFAULT_DAY_MAX_BRIGHTNESS
     fallback: str = DEFAULT_DAY_MODE_FALLBACK
     fixed_brightness_pct: int = DEFAULT_DAY_FIXED_BRIGHTNESS_PCT
+    switch_dwell_min: int = DEFAULT_DAY_SWITCH_DWELL_MIN
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
+        if not isinstance(self.switch_dwell_min, int) or self.switch_dwell_min < 0:
+            raise ValueError(
+                "DayModeConfig: switch_dwell_min must be a nonnegative integer"
+            )
         if self.lux_on >= self.lux_off:
             raise ValueError(
                 f"DayModeConfig: lux_on ({self.lux_on}) must be < lux_off ({self.lux_off})"
@@ -413,8 +420,18 @@ class DayNightConfig:
         light_sensor = extract_entity_ids(options, CONF_LIGHT_SENSOR) or None
         motion_sensor = extract_entity_ids(options, CONF_MOTION_SENSOR) or None
 
+        # Number selectors submit floats; reject fractional minutes rather
+        # than silently truncating a negative or incomplete dwell interval.
+        dwell_min = float(
+            options.get(CONF_DAY_SWITCH_DWELL_MIN, DEFAULT_DAY_SWITCH_DWELL_MIN)
+        )
+        if not dwell_min.is_integer() or dwell_min < 0:
+            raise ValueError(
+                "DayModeConfig: switch_dwell_min must be a nonnegative integer"
+            )
         # Day mode config
         day_mode = DayModeConfig(
+            switch_dwell_min=int(dwell_min),
             lux_on=float(options.get(CONF_LUX_ON, DEFAULT_LUX_ON)),
             lux_off=float(options.get(CONF_LUX_OFF, DEFAULT_LUX_OFF)),
             min_brightness=int(options.get(CONF_DAY_MIN_BRIGHTNESS, DEFAULT_DAY_MIN_BRIGHTNESS)),

@@ -142,6 +142,7 @@
               "day_max_brightness": "Day: maximum brightness %",
               "lux_smoothing_samples": "LUX smoothing: rolling average samples (1 = off)",
               "brightness_change_threshold_pct": "Brightness change threshold (%) to prevent micro-adjustments",
+              "day_switch_dwell_min": "Day on/off dwell time (minutes; 0 = immediate)",
               "flapping_freeze_min": "Flapping freeze duration (minutes) after oscillation detection",
               "day_mode_fallback": "Day mode without LUX sensor",
               "day_fixed_brightness_pct": "Fixed brightness (%) for day mode"

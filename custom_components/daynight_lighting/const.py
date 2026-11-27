@@ -84,6 +84,9 @@ DAY_FALLBACK_OFF = "off"  # turn lights off
 DEFAULT_DAY_MODE_FALLBACK = DAY_FALLBACK_SKIP
 DEFAULT_DAY_FIXED_BRIGHTNESS_PCT = 80
 
+CONF_DAY_SWITCH_DWELL_MIN = "day_switch_dwell_min"
+DEFAULT_DAY_SWITCH_DWELL_MIN = 2
+
 # Night mode fallback options
 NIGHT_FALLBACK_SKIP = "skip"  # do nothing (default, current behaviour)
 NIGHT_FALLBACK_ON = "on"  # turn lights on with night brightness

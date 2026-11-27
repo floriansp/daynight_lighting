@@ -64,6 +64,8 @@ class TestSwitchOffTransitionContext:
     """Every off command carries the transition of its own context."""
 
     def test_day_lux_off_uses_the_tick_transition(self, make_switch, fake_hass):
+        fake_hass.states.set("light.a", FakeState(state="on"))
+        fake_hass.states.set("light.b", FakeState(state="on"))
         switch, *_ = make_switch(
             {
                 **TRANSITIONS,
@@ -82,6 +84,8 @@ class TestSwitchOffTransitionContext:
         ]
 
     def test_day_fallback_off_uses_the_tick_transition(self, make_switch, fake_hass):
+        fake_hass.states.set("light.a", FakeState(state="on"))
+        fake_hass.states.set("light.b", FakeState(state="on"))
         switch, *_ = make_switch(
             {**TRANSITIONS, "light_sensor": None, "day_mode_fallback": "off"},
             day_mode=True,
@@ -94,6 +98,8 @@ class TestSwitchOffTransitionContext:
         ]
 
     def test_night_fallback_off_uses_the_tick_transition(self, make_switch, fake_hass):
+        fake_hass.states.set("light.a", FakeState(state="on"))
+        fake_hass.states.set("light.b", FakeState(state="on"))
         switch, *_ = make_switch(
             {**TRANSITIONS, "motion_sensor": None, "night_mode_fallback": "off"},
             day_mode=False,
@@ -108,6 +114,8 @@ class TestSwitchOffTransitionContext:
     def test_entering_night_with_turn_off_uses_the_tick_transition(
         self, make_switch, fake_hass
     ):
+        fake_hass.states.set("light.a", FakeState(state="on"))
+        fake_hass.states.set("light.b", FakeState(state="on"))
         switch, *_ = make_switch(
             {**TRANSITIONS, "on_enter_night": "turn_off"}, day_mode=False
         )
@@ -120,6 +128,7 @@ class TestSwitchOffTransitionContext:
         ]
 
     def test_sleep_end_uses_the_mode_transition(self, make_switch, fake_hass):
+        fake_hass.states.set("light.a", FakeState(state="on"))
         switch, *_ = make_switch(
             {
                 **TRANSITIONS,
@@ -314,6 +323,8 @@ class TestCoordinatorAfterRamp:
         assert applied == [ExpectedState(on=True, brightness_pct=70, kelvin=3000)]
 
     def test_off_expected_turns_the_lights_off(self, fake_hass):
+        fake_hass.states.set("light.a", FakeState(state="on"))
+        fake_hass.states.set("light.b", FakeState(state="on"))
         coordinator, state_ctrl, _ = _coordinator(fake_hass, ExpectedState(on=False))
 
         coordinator.transition_sync(MODE_WAKEUP, MODE_DAY)

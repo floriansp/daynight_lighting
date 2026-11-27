@@ -406,3 +406,39 @@ def test_compensation_is_sampled_once_per_measurement(fake_hass):
     assert reader.get_lux() == 100
     fake_hass.states.set("sensor.lux", FakeState(state="150"))
     assert reader.get_lux() == 95  # new State, same numeric reading
+
+
+def test_repeated_off_records_do_not_extend_the_freeze(fake_hass):
+    """Off ticks cannot keep a dark room frozen past the original deadline."""
+    reader = _make_reader(fake_hass)
+    start = datetime(2026, 11, 10, 13, 15)
+    with patch("custom_components.daynight_lighting.illuminance.datetime") as clock:
+        for seconds, pct in enumerate([0, 80, 0, 80, 0]):
+            clock.now.return_value = start + timedelta(seconds=seconds)
+            reader.record_brightness_applied(pct)
+        assert not reader.should_apply_brightness(60)
+        for seconds in (10, 60, 180, 299):
+            clock.now.return_value = start + timedelta(seconds=seconds)
+            reader.record_brightness_applied(0)
+            assert reader.get_last_applied_brightness() == 0
+        clock.now.return_value = start + timedelta(minutes=5, seconds=5)
+        assert reader.should_apply_brightness(60)
+
+
+def test_a_freeze_warns_once_per_freeze(fake_hass, caplog):
+    """Even real changes during a freeze neither re-arm nor re-warn."""
+    reader = _make_reader(fake_hass, flapping_freeze_min=1)
+    start = datetime(2026, 11, 10, 13, 15)
+    with patch("custom_components.daynight_lighting.illuminance.datetime") as clock:
+        for seconds, pct in enumerate([0, 80, 0, 80, 0, 0, 80, 0]):
+            clock.now.return_value = start + timedelta(seconds=seconds)
+            reader.record_brightness_applied(pct)
+        def warnings():
+            return [r for r in caplog.records if "Flapping detected" in r.message]
+
+        assert len(warnings()) == 1
+        clock.now.return_value = start + timedelta(seconds=65)
+        assert reader.should_apply_brightness(60)
+        reader.record_brightness_applied(80)
+        assert len(warnings()) == 2
+        assert not reader.should_apply_brightness(60)

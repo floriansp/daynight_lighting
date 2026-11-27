@@ -21,6 +21,7 @@ class TestSleepEndsBehavior:
 
     def test_sleep_progress_complete_turns_lights_off(self, make_switch, fake_hass):
         """When sleep duration complete (progress >= 1.0), lights turn OFF."""
+        fake_hass.states.set("light.a", FakeState(state="on"))
         switch, *_ = make_switch(
             options={
                 "lights": ["light.a"],

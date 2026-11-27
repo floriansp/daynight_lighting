@@ -2,6 +2,8 @@
 
 from unittest.mock import Mock
 
+from tests.conftest import FakeState
+
 
 
 def _day_handler_tick(switch):
@@ -46,6 +48,8 @@ class TestDayModeFallbackOff:
 
     def test_off_turns_lights_off(self, make_switch, fake_hass):
         """Off should turn lights off during day."""
+        fake_hass.states.set("light.a", FakeState(state="on"))
+        fake_hass.states.set("light.b", FakeState(state="on"))
         switch, *_ = make_switch(
             options={"light_sensor": None, "day_mode_fallback": "off"}
         )
@@ -254,6 +258,8 @@ class TestNightModeFallbackOff:
 
     def test_off_turns_lights_off(self, make_switch, fake_hass):
         """Off should turn lights off during night."""
+        fake_hass.states.set("light.a", FakeState(state="on"))
+        fake_hass.states.set("light.b", FakeState(state="on"))
         switch, *_ = make_switch(
             options={"motion_sensor": None, "night_mode_fallback": "off"},
             day_mode=False,

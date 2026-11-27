@@ -6,6 +6,7 @@ Handles day mode: LUX-based brightness with circadian color control.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.light import ATTR_BRIGHTNESS_PCT, ATTR_COLOR_TEMP_KELVIN
@@ -20,6 +21,7 @@ from ..const import (
 from ..context import SharedHandlerDeps
 from ..domain.brightness import (
     apply_weather_modifier,
+    brightness_to_pct,
     feedback_gain_bound,
     lux_to_brightness_pct,
 )
@@ -62,6 +64,11 @@ class DayModeHandler(BaseModeHandler):
         self._weather = weather
         self._circadian = circadian
         self._last_applied_kelvin: int | None = None
+        self._effective_on: bool | None = None
+        self._effective_brightness: int | None = None
+        self._pending_on: bool | None = None
+        self._pending_since: datetime | None = None
+        self._last_measurement: tuple[Any, ...] = ()
 
     def tick(self) -> None:
         """Execute day mode tick: apply the day values.
@@ -76,10 +83,24 @@ class DayModeHandler(BaseModeHandler):
         """Called when entering day mode."""
         # Note: day mode is applied by tick() on next cycle
         # This avoids duplicate commands when transitioning from other modes
+        self.forget_applied_values()
 
     def exit(self, next_mode: str) -> None:
         """Called when exiting day mode."""
-        pass
+        self._forget_switch_state()
+
+    def _forget_switch_state(self) -> None:
+        """Drop the committed and the pending on/off state.
+
+        Seeding it again from the lights is the honest restart: whatever this
+        handler remembers about on/off describes the lights only as long as
+        nobody else has touched them.
+        """
+        self._effective_on = None
+        self._effective_brightness = None
+        self._pending_on = None
+        self._pending_since = None
+        self._last_measurement = ()
 
     def forget_applied_values(self) -> None:
         """Drop the last applied brightness and colour.
@@ -95,6 +116,11 @@ class DayModeHandler(BaseModeHandler):
         """
         self._illuminance.forget_applied_brightness()
         self._last_applied_kelvin = None
+        # The remembered on/off state is a memory of our own commands too, so
+        # an intervention invalidates it as well; without this reset the next
+        # expected-state read could report the state from before the
+        # intervention, and a fresh dwell would be anchored to it (V28).
+        self._forget_switch_state()
 
     def target_fixed_brightness(self) -> int:
         """Fixed day brightness in effect: dialled, else the configured value.
@@ -111,12 +137,26 @@ class DayModeHandler(BaseModeHandler):
     def calculate_expected_state(self) -> ExpectedState:
         """Calculate expected light state based on current conditions.
 
-        For day mode:
-        - Light should be ON if LUX is below threshold
-        - Brightness is LUX-based (interpolated)
-        - Color is circadian (if enabled)
+        Pending LUX transitions must not look like external interventions.
+        Once applied, report the values actually sent, including values kept
+        by the brightness and colour dampers. Before the first measurement,
+        retain the existing fallback semantics.
         """
         lux = self._illuminance.get_lux()
+        if lux is not None and self._config.switch_dwell_min > 0:
+            self._remember_effective_state(self._lights.get_lights_list())
+        if lux is not None and self._effective_on is not None:
+            return ExpectedState(
+                on=self._effective_on,
+                brightness_pct=(
+                    self._effective_brightness
+                    if self._effective_on and self._is_control_brightness_on() else None
+                ),
+                kelvin=(
+                    self._last_applied_kelvin
+                    if self._effective_on and self._is_control_color_on() else None
+                ),
+            )
 
         # Determine if lights should be on
         if lux is None:
@@ -220,6 +260,54 @@ class DayModeHandler(BaseModeHandler):
         delta = abs(kelvin - self._last_applied_kelvin)
         return delta >= 50
 
+    def _remember_effective_state(self, lights: list[str]) -> None:
+        """Seed the in-memory state from the lights, never from a pending target."""
+        if self._effective_on is not None:
+            return
+        on_states = [
+            state
+            for light in lights
+            if (state := self._hass.states.get(light)) is not None
+            and state.state == "on"
+        ]
+        self._effective_on = bool(on_states)
+        if on_states:
+            self._effective_brightness = brightness_to_pct(
+                on_states[0].attributes.get("brightness")
+            )
+            self._last_applied_kelvin = on_states[0].attributes.get("color_temp_kelvin")
+
+    def _dwelled_on(self, target_on: bool, lights: list[str]) -> bool:
+        """Release a transition only on a fresh measurement after its deadline."""
+        if self._config.switch_dwell_min == 0:
+            return target_on
+        self._remember_effective_state(lights)
+        # Like IlluminanceReader's smoothing, consume each immutable HA state
+        # object only once. Minute/sun ticks are not new LUX measurements.
+        measurement = tuple(
+            self._hass.states.get(entity_id)
+            for entity_id in self._illuminance.get_light_sensor_entities()
+        )
+        if len(measurement) == len(self._last_measurement) and all(
+            current is previous
+            for current, previous in zip(measurement, self._last_measurement)
+        ):
+            return bool(self._effective_on)
+        self._last_measurement = measurement
+        if target_on == self._effective_on:
+            self._pending_on = None
+            self._pending_since = None
+            return target_on
+        now = datetime.now()
+        if self._pending_on != target_on:
+            self._pending_on = target_on
+            self._pending_since = now
+        if self._pending_since is not None and now >= (
+            self._pending_since + timedelta(minutes=self._config.switch_dwell_min)
+        ):
+            return target_on
+        return bool(self._effective_on)
+
     def _apply_day_mode(self) -> None:
         """Compute desired day-mode values and apply to all lights."""
         lights = self._lights.get_lights_list()
@@ -241,6 +329,12 @@ class DayModeHandler(BaseModeHandler):
         lux = self._illuminance.get_lux()
 
         if lux is None:
+            # Missing measurements cannot establish an uninterrupted LUX target.
+            self._pending_on = None
+            self._pending_since = None
+            self._last_measurement = ()
+            self._effective_on = None
+            self._effective_brightness = None
             self._apply_day_mode_fallback(lights)
             return
 
@@ -252,6 +346,16 @@ class DayModeHandler(BaseModeHandler):
             self._illuminance.get_lux_calibration(),
         )
         pct = self._lux_curve_pct()
+        effective_on = self._dwelled_on(pct is not None, lights)
+        if not effective_on and pct is not None:
+            # A colour-only turn_on would bypass the pending on transition.
+            return
+        if effective_on and pct is None:
+            # Keep the brightness in force, but still allow circadian updates.
+            pct = self._effective_brightness or 0
+            pending_off = True
+        else:
+            pending_off = False
 
         if pct is None:
             _LOGGER.debug(
@@ -263,9 +367,12 @@ class DayModeHandler(BaseModeHandler):
             self._turn_off_lights(lights)
             self._illuminance.record_brightness_applied(0, gain_bound=gain_bound)
             self._last_applied_kelvin = None
+            self._effective_on = False
+            self._effective_brightness = None
             return
 
-        pct = self._weathered(pct)
+        if not pending_off:
+            pct = self._weathered(pct)
 
         # Calculate circadian color ALWAYS
         kelvin: int | None = None
@@ -279,7 +386,9 @@ class DayModeHandler(BaseModeHandler):
             )
 
         # Decide what needs updating
-        brightness_needs_update = self._illuminance.should_apply_brightness(pct)
+        brightness_needs_update = (
+            not pending_off and self._illuminance.should_apply_brightness(pct)
+        )
         color_needs_update = kelvin is not None and self._should_apply_kelvin(kelvin)
 
         if not brightness_needs_update and not color_needs_update:
@@ -292,7 +401,7 @@ class DayModeHandler(BaseModeHandler):
         # — not the computed value that never went out.
         applied_brightness = (
             pct if brightness_needs_update
-            else self._illuminance.get_last_applied_brightness()
+            else self._effective_brightness
         )
         applied_kelvin = kelvin if color_needs_update else self._last_applied_kelvin
 
@@ -331,6 +440,8 @@ class DayModeHandler(BaseModeHandler):
                 kelvin=applied_kelvin if self._is_control_color_on() else None,
             )
 
+            self._effective_on = True
+            self._effective_brightness = applied_brightness
             if brightness_needs_update:
                 self._illuminance.record_brightness_applied(pct, gain_bound=gain_bound)
             if color_needs_update and kelvin is not None:

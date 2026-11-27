@@ -38,7 +38,7 @@ class LightApplier:
         get_transition: Callable[[str], int],
         instance_name: str = "",
         on_applied: Callable[[ExpectedState], None] | None = None,
-        mark_applied: Callable[[list[str]], None] | None = None,
+        mark_applied: Callable[[list[str], float], None] | None = None,
     ) -> None:
         """Initialize the applier.
 
@@ -48,7 +48,7 @@ class LightApplier:
             get_transition: Callable resolving a transition context to seconds
             instance_name: Instance name for logging
             on_applied: Observer notified with the values we just commanded
-            mark_applied: Observer notified with the lights we just commanded,
+            mark_applied: Observer notified with the lights and transition seconds,
                 so external-control detection exempts them while the command
                 is in flight (grace period).
         """
@@ -77,7 +77,8 @@ class LightApplier:
             brightness_pct: Expected brightness, None if we don't control it
             kelvin: Expected color temperature, None if we don't control it
         """
-        self._call("turn_on", self._with_transition(payload, transition))
+        payload = self._with_transition(payload, transition)
+        self._call("turn_on", payload)
         self._state_ctrl.mark_controlled(lights)
         for lid in lights:
             self._state_ctrl.set_expected_state(
@@ -89,7 +90,7 @@ class LightApplier:
         self._notify(
             ExpectedState(on=True, brightness_pct=brightness_pct, kelvin=kelvin)
         )
-        self._mark_applied_now(lights)
+        self._mark_applied_now(lights, payload.get("transition", 0))
 
     def turn_off(self, lights: list[str], *, transition: str) -> None:
         """Turn lights off, release them and record expected state as OFF.
@@ -98,13 +99,23 @@ class LightApplier:
             lights: Lights to turn off
             transition: Transition context ("tick", "initial" or "mode")
         """
-        payload: dict[str, Any] = {"entity_id": lights}
-        self._call("turn_off", self._with_transition(payload, transition))
+        # Missing/unknown/unavailable states offer nothing we can turn off;
+        # a no-op must not renew the external-control grace period.
+        on_lights = [
+            lid
+            for lid in lights
+            if (state := self._hass.states.get(lid)) is not None
+            and state.state == STATE_ON
+        ]
+        if on_lights:
+            payload: dict[str, Any] = {"entity_id": on_lights}
+            payload = self._with_transition(payload, transition)
+            self._call("turn_off", payload)
+            self._mark_applied_now(on_lights, payload.get("transition", 0))
         self._state_ctrl.unmark_controlled(lights)
         for lid in lights:
             self._state_ctrl.set_expected_state(lid, on=False)
         self._notify(ExpectedState(on=False))
-        self._mark_applied_now(lights)
 
     def step_brightness(self, lights: list[str], step: int, *, floor: int) -> None:
         """Move each light by *step* percent, never below *floor*.
@@ -149,12 +160,12 @@ class LightApplier:
         except Exception:  # noqa: BLE001 - monitoring must not affect control
             _LOGGER.exception("Applied-state observer raised, ignoring")
 
-    def _mark_applied_now(self, lights: list[str]) -> None:
+    def _mark_applied_now(self, lights: list[str], transition_seconds: float) -> None:
         """Exempt the commanded lights from detection while in flight."""
         if self._mark_applied is None:
             return
         try:
-            self._mark_applied(lights)
+            self._mark_applied(lights, transition_seconds)
         except Exception:  # noqa: BLE001 - detection must not affect switching
             _LOGGER.exception("mark-applied observer raised, ignoring")
 

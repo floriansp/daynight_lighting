@@ -142,6 +142,7 @@
               "day_max_brightness": "Tag: Maximale Helligkeit %",
               "lux_smoothing_samples": "LUX-Glättung: Anzahl Samples für rollierenden Durchschnitt (1 = aus)",
               "brightness_change_threshold_pct": "Helligkeitsänderungs-Schwellwert (%) zur Vermeidung von Mikro-Anpassungen",
+              "day_switch_dwell_min": "Verweilzeit für Tag-An/Aus (Minuten; 0 = sofort)",
               "flapping_freeze_min": "Flapping-Freeze-Dauer (Minuten) nach Oszillationserkennung",
               "day_mode_fallback": "Tag-Modus ohne LUX-Sensor",
               "day_fixed_brightness_pct": "Feste Helligkeit (%) für Tag-Modus"

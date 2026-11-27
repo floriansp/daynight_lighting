@@ -48,7 +48,7 @@ class TransitionCoordinator:
         is_control_brightness_on: Callable[[], bool],
         is_control_color_on: Callable[[], bool],
         on_applied: Callable[[ExpectedState], None] | None = None,
-        mark_applied: Callable[[list[str]], None] | None = None,
+        mark_applied: Callable[[list[str], float], None] | None = None,
     ) -> None:
         """Initialize transition coordinator.
 
@@ -63,7 +63,7 @@ class TransitionCoordinator:
             is_control_brightness_on: Callable to check brightness control
             is_control_color_on: Callable to check color control
             on_applied: Observer notified with the values we command
-            mark_applied: Observer notified with the lights we command, to
+            mark_applied: Observer notified with lights and transition seconds, to
                 exempt them from detection while the command is in flight
         """
         self._hass = hass

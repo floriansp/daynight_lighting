@@ -5,6 +5,42 @@ All notable changes to DayNight Lighting will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] - 2026-11-27
+
+### Added
+- New instance option **Day on/off dwell time** (`day_switch_dwell_min`,
+  default `2` minutes). A new on/off target in day mode only takes effect once
+  it has held for that long on fresh measurements; brightness and colour
+  changes within the same state stay immediate and a phase change overrides.
+  This stops the day mode from switching a room on and off every few seconds
+  while daylight sits at the off threshold. `0` switches immediately, as
+  before — note that the default is not 0, so the behaviour changes.
+
+### Fixed
+- The anti-oscillation freeze could extend itself indefinitely. A tick that
+  found the lights already off recorded the same applied brightness again,
+  re-armed the freeze and logged the warning once per tick. Because the same
+  freeze blocks the turn-on path, the room then stayed dark. A freeze now
+  warns once and ends at the latest after its configured duration.
+- Day mode could stay dark for hours after taking over a room from another
+  phase. The damping memory still held the brightness sent before the room was
+  switched off elsewhere, so the first day tick decided "already at the
+  target" and sent nothing; with the circadian colour close to its previous
+  value nothing went out at all. Entering day mode now drops that memory and
+  applies the target on the next tick.
+- The off path sent `light.turn_off` on every tick while the room was bright
+  enough to be off, even with all lights already off — around 2600 commands on
+  a sunny day, each renewing the grace window of external-control detection
+  and thereby swallowing wall-switch presses. Lights that are already off are
+  no longer commanded; the expected state is still recorded.
+- Our own transition ramp could be read as an external intervention: the grace
+  period was 5 s while the commanded ramp was also 5 s, so the final ramp
+  report or a motion event in between counted as somebody else's doing and
+  produced a detected hold. The grace period now covers the commanded
+  transition plus the usual 5 s, for turn-on and turn-off alike. A `transition`
+  value passed through a service is coerced to a number first, so a string can
+  no longer disable detection for a light.
+
 ## [1.20.0] - 2026-11-05
 
 ### Added

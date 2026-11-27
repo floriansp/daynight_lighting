@@ -205,3 +205,25 @@ class TestIlluminanceConfigValidation:
         """flapping_freeze_min < 0 raises ValueError."""
         with pytest.raises(ValueError, match="flapping_freeze_min.*must be >= 0"):
             IlluminanceConfig(flapping_freeze_min=-1)
+
+
+def test_day_switch_dwell_defaults_and_parsing():
+    """Existing entries default to two minutes; zero and integers round-trip."""
+    from custom_components.daynight_lighting.config import DayNightConfig
+
+    assert DayModeConfig().switch_dwell_min == 2
+    assert DayNightConfig.from_ha_options({}).day_mode.switch_dwell_min == 2
+    for raw, expected in [(0, 0), (3.0, 3), ("4", 4)]:
+        config = DayNightConfig.from_ha_options({"day_switch_dwell_min": raw})
+        assert config.day_mode.switch_dwell_min == expected
+
+
+@pytest.mark.parametrize("minutes", [-1, -0.5, 1.5])
+def test_day_switch_dwell_rejects_invalid_minutes(minutes):
+    """Neither typed config nor option parsing accepts negative/fractional dwell."""
+    from custom_components.daynight_lighting.config import DayNightConfig
+
+    with pytest.raises(ValueError, match="switch_dwell_min"):
+        DayModeConfig(switch_dwell_min=minutes)
+    with pytest.raises(ValueError, match="switch_dwell_min"):
+        DayNightConfig.from_ha_options({"day_switch_dwell_min": minutes})

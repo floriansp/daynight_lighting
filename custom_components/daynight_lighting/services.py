@@ -271,6 +271,7 @@ async def async_turn_on(call: ServiceCall) -> None:
                     on=stays_on,
                     brightness_pct=passthrough.get("brightness_pct") if stays_on else None,
                     kelvin=passthrough.get("color_temp_kelvin") if stays_on else None,
+                    transition_seconds=float(passthrough.get("transition", 0) or 0),
                 )
             _LOGGER.debug(
                 "daynight_lighting.turn_on: instance %s — brightness/color passed, recorded as ours",
@@ -289,6 +290,7 @@ async def async_turn_on(call: ServiceCall) -> None:
                     on=stays_on,
                     brightness_pct=passthrough.get("brightness_pct") if stays_on else None,
                     kelvin=passthrough.get("color_temp_kelvin") if stays_on else None,
+                    transition_seconds=float(passthrough.get("transition", 0) or 0),
                 )
         # Record the hold and cancel the motion-off timer *before* the lights
         # switch. Otherwise a pending night motion-off timer can fire while
@@ -336,7 +338,10 @@ async def async_turn_off(call: ServiceCall) -> None:
         passthrough = {k: v for k, v in call.data.items() if k not in _SERVICE_STRIP_KEYS}
         main_switch = instance_controller(hass, config_entry.entry_id)
         if main_switch is not None:
-            main_switch.prepare_lights_turn_off_by_service(lights)
+            main_switch.prepare_lights_turn_off_by_service(
+                lights,
+                transition_seconds=float(passthrough.get("transition", 0) or 0),
+            )
         # hold: see turn_on. Default False, so a system automation only
         # switches the lights off without holding them.
         hold = call.data.get("hold", False)
